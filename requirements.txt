@@ -1,0 +1,4 @@
+# 运行时依赖（与 pyproject.toml 的 [project.dependencies] 保持一致；
+# 以 pyproject.toml 为单一事实来源，本文件仅供不使用 PEP 517 安装的场景）
+pyvisa>=1.11
+pyvisa-py>=0.6

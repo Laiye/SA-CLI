@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""结果导出与 CLI 入口的测试。"""
+
+import csv
+import json
+
+import pytest
+
+import measurements
+from report import export_results
+
+
+def test_export_json(tmp_path):
+    path = tmp_path / "out.json"
+    export_results(str(path), {
+        "command": "rbw",
+        "results": [{"rbw_hz": 100, "measured_hz": 100.3}],
+    })
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["results"][0]["measured_hz"] == 100.3
+
+
+def test_export_csv(tmp_path):
+    path = tmp_path / "out.csv"
+    export_results(str(path), {
+        "command": "rbw",
+        "results": [
+            {"rbw_hz": 100, "measured_hz": 100.3},
+            {"rbw_hz": 1000, "measured_hz": 998.5},
+        ],
+    })
+    with open(path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 2
+    assert rows[0]["rbw_hz"] == "100"
+    assert rows[1]["measured_hz"] == "998.5"
+
+
+def test_export_unsupported_format_raises(tmp_path):
+    path = tmp_path / "out.txt"
+    with pytest.raises(ValueError):
+        export_results(str(path), {"results": [{"a": 1}]})
+
+
+# ---------- CLI 入口 ----------
+
+class _FakeResource:
+    def __init__(self):
+        self.timeout = 5000
+        self.writes = []
+        self.queries = []
+        self.cleared = False
+
+    def write(self, command):
+        self.writes.append(command)
+
+    def clear(self):
+        self.cleared = True
+
+    def query(self, command):
+        self.queries.append(command)
+        if "MARKer1:Y?" in command or "MARKer1:X?" in command:
+            return "0.0"
+        if command == "*OPC?":
+            return "1"
+        return "OK"
+
+    def read_bytes(self, n):
+        raise OSError()
+
+    def close(self):
+        pass
+
+
+class _FakeRM:
+    def __init__(self):
+        self.resource = _FakeResource()
+        self.closed = False
+
+    def open_resource(self, address):
+        return self.resource
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture(autouse=True)
+def _no_sleep(monkeypatch):
+    monkeypatch.setattr(measurements, "_sleep", lambda s: None)
+
+
+def _patch_rm(monkeypatch):
+    import instruments
+    monkeypatch.setattr(instruments.pyvisa, "ResourceManager", lambda: _FakeRM())
+
+
+def test_main_rbw_end_to_end(monkeypatch, tmp_path):
+    import main
+    _patch_rm(monkeypatch)
+    out = tmp_path / "r.csv"
+    rc = main.main(["rbw", "--carrier", "50e6", "--rbw-list", "100",
+                    "--output", str(out)])
+    assert rc == 0
+    assert out.exists()
+    with open(out, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert rows and "measured_hz" in rows[0]
+
+
+def test_main_bw60_end_to_end(monkeypatch, tmp_path):
+    import main
+    _patch_rm(monkeypatch)
+    out = tmp_path / "b.json"
+    rc = main.main(["bw60", "--carrier", "50e6", "--rbw-list", "1000",
+                    "--output", str(out)])
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["results"][0]["bw60_hz"] is not None
+
+
+def test_main_phase_noise_end_to_end(monkeypatch, tmp_path):
+    import main
+    _patch_rm(monkeypatch)
+    rc = main.main(["phase-noise", "-o", "100", "--output", str(tmp_path / "p.json")])
+    assert rc == 0
+
+
+def test_main_sweep_width_end_to_end(monkeypatch, tmp_path):
+    import main
+    _patch_rm(monkeypatch)
+    out = tmp_path / "s.json"
+    rc = main.main(["sweep-width", "-s", "0.5e9", "1e9", "--output", str(out)])
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["command"] == "sweep-width"
+    assert len(data["results"]) == 2
+    assert "delta" in data["results"][0]
+
+
+def test_main_sweep_width_sw_alias_end_to_end(monkeypatch, tmp_path):
+    import main
+    _patch_rm(monkeypatch)
+    rc = main.main(["sw", "-s", "1.6e9", "2e9", "--output", str(tmp_path / "s2.json")])
+    assert rc == 0
+
+
+def test_main_no_command_prints_help(capsys):
+    import main
+    rc = main.main([])
+    assert rc == 0
+    assert "usage" in capsys.readouterr().out.lower()
+
+
+def test_main_returns_error_on_exception(monkeypatch, caplog):
+    import logging
+
+    import main
+    _patch_rm(monkeypatch)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(main, "cal_rbw", boom)
+    with caplog.at_level(logging.ERROR):
+        rc = main.main(["rbw", "--rbw-list", "100"])
+    assert rc == 1
+    assert any("程序异常" in record.message for record in caplog.records)
+
+
+def test_main_verbose_flag_after_subcommand(monkeypatch):
+    import main
+    _patch_rm(monkeypatch)
+    rc = main.main(["rbw", "--rbw-list", "100", "--verbose"])
+    assert rc == 0
+
+
+def test_main_cli_overrides_config_defaults(monkeypatch, tmp_path):
+    """CLI 传入的校准点优先于 cal_points.json 默认值。"""
+    import main
+    _patch_rm(monkeypatch)
+    out = tmp_path / "o.json"
+    rc = main.main(["rbw", "--rbw-list", "100", "200", "--output", str(out)])
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert len(data["results"]) == 2
+
+
+def test_main_rbw_uses_config_default_points(monkeypatch, tmp_path):
+    """不传校准点时，使用 cal_points.json 中的默认校准点（rbw 共 8 个）。"""
+    import main
+    _patch_rm(monkeypatch)
+    out = tmp_path / "o.json"
+    rc = main.main(["rbw", "--output", str(out)])
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert len(data["results"]) == 8
+
+
+def test_main_phase_noise_multi_offset(monkeypatch, tmp_path):
+    """相位噪声支持多频偏，结果逐条导出。"""
+    import main
+    _patch_rm(monkeypatch)
+    out = tmp_path / "p.json"
+    rc = main.main(["phase-noise", "-o", "100", "1000", "--output", str(out)])
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert len(data["results"]) == 2
+    assert data["results"][0]["offset_hz"] == 100
+    assert data["results"][1]["offset_hz"] == 1000
+
+
+def test_main_log_scale_end_to_end(monkeypatch, tmp_path):
+    """对数刻度 CLI：1 dB/div 模式导出 9 个校准点。"""
+    import main
+    _patch_rm(monkeypatch)
+    out = tmp_path / "l.json"
+    rc = main.main(["log-scale", "--scale", "1", "--output", str(out)])
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["command"] == "log-scale"
+    assert len(data["results"]) == 9
+
+
+def test_main_log_scale_10db_mode(monkeypatch, tmp_path):
+    import main
+    _patch_rm(monkeypatch)
+    out = tmp_path / "l10.json"
+    rc = main.main(["log", "--scale", "10", "--output", str(out)])
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["scale_db_per_div"] == 10
+    assert len(data["results"]) == 8
+
+
+def test_main_linear_scale_end_to_end(monkeypatch, tmp_path):
+    """线性刻度 CLI：默认校准点 4~20 dB 共 5 个。"""
+    import main
+    _patch_rm(monkeypatch)
+    out = tmp_path / "ln.json"
+    rc = main.main(["linear-scale", "--output", str(out)])
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["command"] == "linear-scale"
+    assert len(data["results"]) == 5
+    assert "theoretical_mv" in data["results"][0]
+
+
+# ---------- CLI 参数校验 ----------
+
+def _parse(command, *args):
+    import main
+    return main.build_parser().parse_args([command, *args])
+
+
+def test_parser_rejects_zero_offset():
+    with pytest.raises(SystemExit):
+        _parse("phase-noise", "--offset", "0")
+
+
+def test_parser_rejects_negative_carrier():
+    with pytest.raises(SystemExit):
+        _parse("rbw", "--carrier", "-1e6")
+
+
+def test_parser_rejects_negative_rbw_in_list():
+    with pytest.raises(SystemExit):
+        _parse("rbw", "--rbw-list", "100", "-100")
+
+
+def test_parser_rejects_negative_settle():
+    with pytest.raises(SystemExit):
+        _parse("linear-scale", "--settle", "-1")
+
+
+def test_parser_allows_negative_ref_level():
+    """参考电平/信号源电平可为负（dBm），不应被校验拒绝。"""
+    args = _parse("phase-noise", "--offset", "100", "--ref-level", "-10")
+    assert args.ref_level == -10
+    args = _parse("sweep-width", "-s", "1e9", "--sg-power", "-30")
+    assert args.sg_power == -30
+
+
+def test_parser_accepts_zero_align_threshold():
+    """align-threshold=0 合法（文档化：关闭对中预处理）。"""
+    args = _parse("sweep-width", "-s", "1e9", "--align-threshold", "0")
+    assert args.align_threshold == 0.0
+
+
+# ---------- dry-run ----------
+
+def test_main_dry_run_prints_scpi_without_visa(monkeypatch, caplog):
+    """dry-run 不创建 VISA ResourceManager，完整跑流程并打印 SCPI 序列。"""
+    import logging
+
+    import main
+    import instruments
+    monkeypatch.setattr(
+        instruments.pyvisa, "ResourceManager",
+        lambda: (_ for _ in ()).throw(AssertionError("dry-run 不应创建 ResourceManager")))
+    with caplog.at_level(logging.INFO):
+        rc = main.main(["rbw", "--rbw-list", "100", "--dry-run"])
+    assert rc == 0
+    text = caplog.text
+    assert "DRY-RUN" in text
+    assert ":SYSTem:PRESet" in text      # SA preset
+    assert "*RST" in text                 # SG preset
+    assert ":BANDwidth:RESolution 100.0" in text
+
+
+# ---------- 部分结果导出 ----------
+
+def test_main_exports_partial_results_on_interrupt(monkeypatch, tmp_path):
+    """中途异常（MeasurementError）时应把已完成点写入 --output 并标记 partial。"""
+    import main
+    _patch_rm(monkeypatch)
+
+    def _boom(spec, sig, carrier_freq_hz=None, rbw_list=None):
+        raise measurements.MeasurementError(
+            "测试中断", partial_results={100: 100.3, 1000: 998.5})
+
+    monkeypatch.setattr(main, "cal_rbw", _boom)
+    out = tmp_path / "partial.json"
+    rc = main.main(["rbw", "--rbw-list", "100", "1000", "--output", str(out)])
+    assert rc == 1
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["partial"] is True
+    assert data["command"] == "rbw"
+    assert [r["rbw_hz"] for r in data["results"]] == [100, 1000]
+    assert data["results"][0]["measured_hz"] == 100.3
+
+
+def test_main_no_output_skips_partial_export(monkeypatch, caplog):
+    """未指定 --output 时部分结果不落盘，仅记录错误并返回 1。"""
+    import logging
+
+    import main
+    _patch_rm(monkeypatch)
+
+    def _boom(spec, sig, carrier_freq_hz=None, rbw_list=None):
+        raise measurements.MeasurementError(
+            "测试中断", partial_results={100: 100.3})
+
+    monkeypatch.setattr(main, "cal_rbw", _boom)
+    with caplog.at_level(logging.ERROR):
+        rc = main.main(["rbw", "--rbw-list", "100"])
+    assert rc == 1
+    assert any("测量中断" in r.message for r in caplog.records)
+
+
+def test_main_shows_point_progress(monkeypatch, caplog):
+    """多校准点运行时逐点打印 [i/N] 进度行。"""
+    import logging
+
+    import main
+    _patch_rm(monkeypatch)
+    with caplog.at_level(logging.INFO):
+        rc = main.main(["rbw", "--rbw-list", "100", "1000"])
+    assert rc == 0
+    assert "[1/2] 测量 RBW=100.0 Hz" in caplog.text
+    assert "[2/2] 测量 RBW=1000.0 Hz" in caplog.text

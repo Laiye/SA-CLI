@@ -1,0 +1,135 @@
+{
+  "name": "Agilent_PSA_Series",
+  "description": "Agilent PSA_Series Spectrum Analyzers",
+  "type": "pyvisa",
+  "models": ["E4440A", "E4443A", "E4445A", "E4446A", "E4448A"],
+  "actions": {
+    "preset": {
+      "commands": [":SYSTem:PRESet"],
+      "args_num": 0
+    },
+    "set_center_freq": {
+      "commands": [":FREQuency:CENTer "],
+      "args_num": 1
+    },
+    "set_span": {
+      "commands": [":FREQuency:SPAN "],
+      "args_num": 1
+    },
+    "set_rbw": {
+      "commands": [":BANDwidth:RESolution "],
+      "args_num": 1
+    },
+    "set_vbw": {
+      "commands": [":BANDwidth:VIDeo "],
+      "args_num": 1
+    },
+    "set_vbw_auto": {
+      "commands": [":BANDwidth:VIDeo:AUTO ON"],
+      "args_num": 0
+    },
+    "set_ref_level": {
+      "commands": [":DISPlay:WINDow:TRACe:Y:RLEVel "],
+      "args_num": 1
+    },
+    "set_attenuation": {
+      "commands": [":POWer:ATTenuation "],
+      "args_num": 1
+    },
+    "set_sweep_single": {
+      "commands": [":INITiate:CONTinuous OFF"],
+      "args_num": 0
+    },
+    "set_sweep_cont": {
+      "commands": [":INITiate:CONTinuous ON"],
+      "args_num": 0
+    },
+    "init_sweep": {
+      "commands": [":INITiate:IMMediate"],
+      "args_num": 0
+    },
+    "peak_search": {
+      "commands": [":CALCulate:MARKer1:MAXimum"],
+      "args_num": 0
+    },
+    "marker_set_x": {
+      "commands": [":CALCulate:MARKer1:X "],
+      "args_num": 1
+    },
+    "marker_read_x": {
+      "commands": [":CALCulate:MARKer1:X?"],
+      "args_num": 0,
+      "is_query": true
+    },
+    "marker_read_y": {
+      "commands": [":CALCulate:MARKer1:Y?"],
+      "args_num": 0,
+      "is_query": true
+    },
+    "set_marker_delta": {
+      "commands": [":CALCulate:MARKer1:MODE DELTa"],
+      "args_num": 0
+    },
+    "set_marker_normal": {
+      "commands": [":CALCulate:MARKer1:MODE POS"],
+      "args_num": 0
+    },
+    "set_marker_to_center": {
+      "commands": [":CALCulate:MARKer1:SET:CENT"],
+      "args_num": 0
+    },
+    "set_vertical_scale": {
+      "commands": [":DISPlay:WINDow:TRACe:Y:SCALe:PDIVision "],
+      "args_num": 1
+    },
+    "set_y_scale_type": {
+      "commands": [":DISPlay:WINDow:TRACe:Y:SCALe:SPACing "],
+      "args_num": 1
+    },
+    "set_detector_mode_normal": {
+      "commands": [":DET NORM"],
+      "args_num": 0
+    },
+    "set_detector_mode_sample": {
+      "commands": [":DET SAMP"],
+      "args_num": 0
+    },
+    "set_trace_average_on": {
+      "commands": [":AVERage:STATE ON"],
+      "args_num": 0
+    },
+    "set_trace_average_off": {
+      "commands": [":AVERage:STATE OFF"],
+      "args_num": 0
+    },
+    "set_average_count": {
+      "commands": [":AVERage:COUNt "],
+      "args_num": 1
+    },
+    "query_average_count": {
+      "commands": [":AVERage:COUNt?"],
+      "args_num": 0,
+      "is_query": true
+    },
+    "query_average_current": {
+      "commands": [":AVERage:COUNt:CURRent?"],
+      "args_num": 0,
+      "is_query": true
+    },
+    "opc": {
+      "commands": ["*OPC?"],
+      "args_num": 0,
+      "is_query": true
+    },
+    "cls": {
+      "commands": ["*CLS"],
+      "args_num": 0
+    },
+    "idn": {
+      "commands": ["*IDN?"],
+      "args_num": 0,
+      "is_query": true,
+      "returns": "str"
+    }
+  }
+}

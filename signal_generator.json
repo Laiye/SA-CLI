@@ -1,0 +1,43 @@
+{
+  "name": "Keysight_Agilent_Analog_Signal_Generator",
+  "description": "Keysight_Agilent_Analog_Signal_Generator",
+  "type": "pyvisa",
+  "models": ["N5183B", "E8257D", "E4438C"],
+  "actions": {
+    "preset": {
+      "commands": ["*RST"],
+      "args_num": 0
+    },
+    "set_freq": {
+      "commands": [":FREQuency:CW "],
+      "args_num": 1
+    },
+    "set_power": {
+      "commands": [":POWer:AMPLitude "],
+      "args_num": 1
+    },
+    "rf_on": {
+      "commands": [":OUTPut:STATe ON"],
+      "args_num": 0
+    },
+    "rf_off": {
+      "commands": [":OUTPut:STATe OFF"],
+      "args_num": 0
+    },
+    "mod_off": {
+      "commands": [":OUTPut:MODulation:STATe OFF"],
+      "args_num": 0
+    },
+    "opc": {
+      "commands": ["*OPC?"],
+      "args_num": 0,
+      "is_query": true
+    },
+    "idn": {
+      "commands": ["*IDN?"],
+      "args_num": 0,
+      "is_query": true,
+      "returns": "str"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+include README.md
+include requirements.txt
+include requirements-dev.txt
+include cal_points.json
+include spectrum_analyzer.json
+include signal_generator.json
+recursive-include tests *.py

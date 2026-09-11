@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sa-cli"
+version = "0.1.0"
+description = "基于 JSON 指令集的频谱分析仪 & 信号发生器 CLI 控制与测量工具"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "pyvisa>=1.11",
+    "pyvisa-py>=0.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+sa-cli = "main:main"
+
+# 显式声明顶层模块，避免 setuptools 自动发现把 tests/ 当作包
+[tool.setuptools]
+py-modules = ["main", "config", "instruments", "measurements", "report"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
