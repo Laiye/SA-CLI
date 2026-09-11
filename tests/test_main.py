@@ -416,3 +416,58 @@ def test_main_rbw_switch_dry_run_prints_base_and_switched_rbw(monkeypatch, caplo
     assert ":BANDwidth:RESolution 30000.0" in caplog.text   # 基准 RBW（6.12.3）
     assert ":BANDwidth:RESolution 100.0" in caplog.text     # 切换点
     assert ":FREQuency:SPAN 1000.0" in caplog.text          # S/RBW = 10
+
+
+# ---------- 数值后缀（k / M / G）----------
+
+def test_parse_number_helper():
+    import main
+    assert main._parse_number("30k") == pytest.approx(30000.0)
+    assert main._parse_number("1K") == pytest.approx(1000.0)
+    assert main._parse_number("2.4G") == pytest.approx(2.4e9)
+    assert main._parse_number("1.5M") == pytest.approx(1.5e6)
+    assert main._parse_number("-20k") == pytest.approx(-20000.0)
+    assert main._parse_number("50e6") == pytest.approx(5e7)      # 科学计数法仍可用
+    assert main._parse_number(" 300 ") == pytest.approx(300.0)
+
+
+def test_parse_number_helper_rejects_bad_input():
+    import argparse
+
+    import main
+    for bad in ("", "abc", "100m", "30x", "-"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            main._parse_number(bad)
+
+
+def test_parser_si_suffix_on_lists():
+    args = _parse("rbw-switch", "-b", "30k", "1M", "1.5M")
+    assert args.rbw_list == [30000.0, 1000000.0, 1500000.0]
+    assert _parse("rbw", "-b", "100", "1k").rbw_list == [100.0, 1000.0]
+
+
+def test_parser_si_suffix_on_carrier_and_span():
+    assert _parse("rbw", "-c", "2.4G").carrier == pytest.approx(2.4e9)
+    assert _parse("rbw", "-c", "50M").carrier == pytest.approx(50e6)
+    assert _parse("sweep-width", "-s", "1G", "1.6G").span == [1e9, 1.6e9]
+    assert _parse("linear-scale", "--rbw", "3k").rbw == pytest.approx(3000.0)
+    assert _parse("linear-scale", "--tolerance", "0.2").tolerance == pytest.approx(0.2)
+
+
+def test_parser_si_suffix_on_signed_dbm():
+    args = _parse("rbw-switch", "--sg-power", "-20", "--ref-level", "-15")
+    assert args.sg_power == -20
+    assert args.ref_level == -15
+    # 负号 + 后缀需用 --opt=value 形式：argparse 会把 "-0.02k" 当成选项
+    assert _parse("rbw-switch", "--sg-power=-0.02k").sg_power == pytest.approx(-20.0)
+
+
+def test_parser_si_suffix_respects_constraints():
+    with pytest.raises(SystemExit):
+        _parse("rbw", "-b", "0k")                                  # 正数约束
+    with pytest.raises(SystemExit):
+        _parse("sweep-width", "-s", "1G", "--align-threshold", "-1k")   # 非负约束
+    with pytest.raises(SystemExit):
+        _parse("rbw", "-c", "100m")                                # 小写 m 有歧义
+    with pytest.raises(SystemExit):
+        _parse("rbw", "-b", "30x")                                 # 非法后缀

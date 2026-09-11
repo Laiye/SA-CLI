@@ -24,20 +24,53 @@ def setup_logging(verbose):
     )
 
 
+# 数值后缀：k/K=1e3、M=1e6、G=1e9（小写 m 与"毫"歧义，不接受）
+_SI_PREFIXES = {"k": 1e3, "K": 1e3, "M": 1e6, "G": 1e9, "g": 1e9}
+
+
+def _parse_number(text):
+    """解析数值参数：支持 k/K/M/G 后缀与科学计数法。
+
+    例如 30k → 30000、2.4G → 2.4e9、1.5M → 1.5e6、50e6 → 5e7；
+    也接受 -20k 这类带符号写法。小写 m 因易与"毫"混淆而拒绝，兆请写 M。
+    """
+    raw = str(text).strip()
+    if not raw:
+        raise argparse.ArgumentTypeError("空数值")
+    multiplier = 1.0
+    last = raw[-1]
+    if last in _SI_PREFIXES:
+        multiplier = _SI_PREFIXES[last]
+        raw = raw[:-1]
+    elif last == "m":
+        raise argparse.ArgumentTypeError(
+            f"不支持小写 'm'（易与毫混淆），兆请写 'M': {text!r}")
+    try:
+        return float(raw) * multiplier
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"无法解析为数值（支持 30k / 2.4M / 1G / 50e6 写法）: {text!r}") from None
+
+
 def _positive_float(text):
-    """argparse type：必须为正数（频率、列表校准点等）。"""
-    value = float(text)
+    """argparse type：必须为正数（频率、列表校准点等），支持 k/M/G 后缀。"""
+    value = _parse_number(text)
     if value <= 0:
         raise argparse.ArgumentTypeError(f"必须为正数: {text!r}")
     return value
 
 
 def _nonneg_float(text):
-    """argparse type：不能为负数（衰减、等待时间等）。"""
-    value = float(text)
+    """argparse type：不能为负数（衰减、等待时间等），支持 k/M/G 后缀。"""
+    value = _parse_number(text)
     if value < 0:
         raise argparse.ArgumentTypeError(f"不能为负数: {text!r}")
     return value
+
+
+def _any_float(text):
+    """argparse type：可正可负的数值（参考电平 / 信号源电平 dBm），支持 k/M/G 后缀。"""
+    return _parse_number(text)
 
 
 def _add_instrument_args(parser):
@@ -88,7 +121,7 @@ def build_parser():
         help="载波频率 (Hz)，默认 1e9 (1 GHz)",
     )
     pn.add_argument(
-        "--ref-level", "-r", type=float, default=config.DEFAULT_REF_LEVEL,
+        "--ref-level", "-r", type=_any_float, default=config.DEFAULT_REF_LEVEL,
         help="参考电平 (dBm)，默认 0",
     )
     pn.add_argument(
@@ -159,7 +192,7 @@ def build_parser():
         help="扫频宽度 / RBW 比率，默认 10（规范 6.12.3 可取 5~10）",
     )
     rsw.add_argument(
-        "--ref-level", "-r", type=float, default=config.DEFAULT_RBW_SWITCH_REF_LEVEL,
+        "--ref-level", "-r", type=_any_float, default=config.DEFAULT_RBW_SWITCH_REF_LEVEL,
         help="参考电平 (dBm)，默认 -15（规范 6.12.3）",
     )
     rsw.add_argument(
@@ -167,7 +200,7 @@ def build_parser():
         help="输入衰减 (dB)，默认 10（规范 6.12.3）",
     )
     rsw.add_argument(
-        "--sg-power", type=float, default=config.DEFAULT_RBW_SWITCH_SG_POWER,
+        "--sg-power", type=_any_float, default=config.DEFAULT_RBW_SWITCH_SG_POWER,
         help="信号源电平 (dBm)，默认 -20（规范 6.12.2）",
     )
     rsw.add_argument(
@@ -188,11 +221,11 @@ def build_parser():
         help="待测扫频宽度列表 (Hz)，可传多个校准点；默认读取 cal_points.json",
     )
     sw.add_argument(
-        "--ref-level", "-r", type=float, default=config.DEFAULT_REF_LEVEL,
+        "--ref-level", "-r", type=_any_float, default=config.DEFAULT_REF_LEVEL,
         help="参考电平 (dBm)，默认 0",
     )
     sw.add_argument(
-        "--sg-power", type=float, default=config.DEFAULT_SG_POWER,
+        "--sg-power", type=_any_float, default=config.DEFAULT_SG_POWER,
         help="信号源电平 (dBm)，默认 -1",
     )
     sw.add_argument(
@@ -224,7 +257,7 @@ def build_parser():
         help="校准点列表 (dB)；默认按模式读取 cal_points.json（1dB: 1~9；10dB: 10~80）",
     )
     ls.add_argument(
-        "--ref-level", "-r", type=float, default=config.DEFAULT_REF_LEVEL,
+        "--ref-level", "-r", type=_any_float, default=config.DEFAULT_REF_LEVEL,
         help="参考电平 (dBm)，默认 0",
     )
     ls.add_argument(
@@ -244,7 +277,7 @@ def build_parser():
         help="视频带宽 (Hz)，默认 30",
     )
     ls.add_argument(
-        "--sg-power", type=float, default=config.DEFAULT_SG_POWER,
+        "--sg-power", type=_any_float, default=config.DEFAULT_SG_POWER,
         help="信号源电平 (dBm)，默认 -1",
     )
     ls.add_argument(
@@ -268,7 +301,7 @@ def build_parser():
         help="校准点列表 (dB)，默认读取 cal_points.json（4 8 12 16 20）",
     )
     lin.add_argument(
-        "--ref-level", "-r", type=float, default=config.DEFAULT_REF_LEVEL,
+        "--ref-level", "-r", type=_any_float, default=config.DEFAULT_REF_LEVEL,
         help="参考电平 (dBm)，默认 0",
     )
     lin.add_argument(
@@ -284,7 +317,7 @@ def build_parser():
         help="分辨力带宽 (Hz)，默认 3k",
     )
     lin.add_argument(
-        "--sg-power", type=float, default=config.DEFAULT_SG_POWER,
+        "--sg-power", type=_any_float, default=config.DEFAULT_SG_POWER,
         help="信号源电平 (dBm)，默认 -1",
     )
     lin.add_argument(

@@ -190,6 +190,9 @@ sa-cli rbw --rbw-list 100 1000 --dry-run
 > 多校准点命令运行时会逐点打印进度与预计剩余时间（按已完成点的平均用时估算），例如：
 > `[3/8] 测量 RBW=100.0 Hz（已用 1分20秒 · 预计剩余 4分10秒）`，前两个点完成前只显示序号与名称。
 
+> **数值写法**：所有数值参数都支持 `k`/`M`/`G` 后缀与科学计数法，例如 `-b 30k 1M`、`-c 2.4G`、`-c 50e6`、
+> `--sg-power -20`。小写 `m` 因易与"毫"混淆而不接受（兆请写 `M`）；非法写法（如 `30x`）会直接报错退出。
+
 ### 1. 噪声边带 — `phase-noise` / `pn` / `噪声边带`
 
 单边带相位噪声测量 (dBc/Hz)。采用零扫宽方法：先将频偏点移至 Center，Span=0，设置 VBW=10Hz 降噪后单次读取。± 频偏两侧各测一次，取噪声更差的一侧作为 ΔL。
@@ -558,11 +561,11 @@ python main.py lin -c 100e6
 # 默认：基准 30 kHz、S/RBW = 10、50 MHz 校准信号频率、默认 RBW 点集
 sa-cli rbw-switch
 
-# 指定 RBW 点集 / 校准信号频率 / S-RBW 比率（注意：参数为数值字面量，不支持 1k/30k 后缀）
-sa-cli rbw-switch -b 1000 3000 10000 30000 100000 -c 100e6 --span-ratio 5
+# 指定 RBW 点集 / 校准信号频率 / S-RBW 比率
+sa-cli rbw-switch -b 1k 3k 10k 30k 100k -c 100e6 --span-ratio 5
 
 # 中文别名 / 导出
-sa-cli 分辨力带宽转换影响 -b 30000 100000 --output rbw_switch.json
+sa-cli 分辨力带宽转换影响 -b 30k 100k --output rbw_switch.json
 ```
 
 **参数：**
