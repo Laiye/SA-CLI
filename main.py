@@ -10,8 +10,8 @@ import config
 import measurements
 from instruments import visa_session
 from measurements import (MeasurementError, cal_bw60, cal_linear_scale,
-                          cal_log_scale, cal_rbw, cal_ssb_phase_noise,
-                          cal_sweep_width)
+                          cal_log_scale, cal_rbw, cal_rbw_switch,
+                          cal_ssb_phase_noise, cal_sweep_width)
 from report import export_results
 
 logger = logging.getLogger(__name__)
@@ -135,6 +135,47 @@ def build_parser():
     )
     _add_instrument_args(bw60)
     _add_output_arg(bw60)
+
+    # ---------- 分辨力带宽转换影响 ----------
+    rsw = subparsers.add_parser(
+        "rbw-switch", aliases=["rbw转换影响", "分辨力带宽转换影响"], parents=[common],
+        help="分辨力带宽转换影响（JJF1396 6.12）",
+    )
+    rsw.add_argument(
+        "--rbw-list", "-b", type=_positive_float, nargs="+",
+        default=config.cal_point_defaults("rbw-switch", config.DEFAULT_RBW_SWITCH_LIST),
+        help="待切换的 RBW 列表 (Hz)，可传多个；默认读取 cal_points.json",
+    )
+    rsw.add_argument(
+        "--carrier", "-c", type=_positive_float, default=config.DEFAULT_CARRIER,
+        help="校准信号频率 (Hz)，默认 50e6 (50 MHz)",
+    )
+    rsw.add_argument(
+        "--ref-rbw", type=_positive_float, default=config.DEFAULT_RBW_SWITCH_REF,
+        help="基准 RBW (Hz)，默认 30k（规范 6.12.3）",
+    )
+    rsw.add_argument(
+        "--span-ratio", type=_positive_float, default=config.DEFAULT_SPAN_RATIO,
+        help="扫频宽度 / RBW 比率，默认 10（规范 6.12.3 可取 5~10）",
+    )
+    rsw.add_argument(
+        "--ref-level", "-r", type=float, default=config.DEFAULT_RBW_SWITCH_REF_LEVEL,
+        help="参考电平 (dBm)，默认 -15（规范 6.12.3）",
+    )
+    rsw.add_argument(
+        "--atten", "-a", type=_nonneg_float, default=config.DEFAULT_ATTEN,
+        help="输入衰减 (dB)，默认 10（规范 6.12.3）",
+    )
+    rsw.add_argument(
+        "--sg-power", type=float, default=config.DEFAULT_RBW_SWITCH_SG_POWER,
+        help="信号源电平 (dBm)，默认 -20（规范 6.12.2）",
+    )
+    rsw.add_argument(
+        "--settle", type=_nonneg_float, default=0.5,
+        help="每次切换 RBW 后的稳定等待下限 (s)，默认 0.5",
+    )
+    _add_instrument_args(rsw)
+    _add_output_arg(rsw)
 
     # ---------- 扫频宽度 ----------
     sw = subparsers.add_parser(
@@ -269,20 +310,23 @@ def build_parser():
 
 
 # ======================= 命令注册与统一执行 =======================
-# 每个命令注册 run(sig, spec, args) -> 结果行列表，以及导出附带字段 export_meta(args)。
+# 每个命令注册 run(sig, spec, args) -> 结果行列表、导出附带字段 export_meta(args)，
+# 以及可选的 summarize(rows)（结论字段，如最大值/最差点）。
 # 中途异常以 MeasurementError 携带已完成点，由 _dispatch 统一导出部分结果。
 
 _COMMAND_SPECS = {}
 _ALIAS_TO_CANONICAL = {}
 
 
-def _register_command(name, aliases=(), export_meta=None):
-    """命令注册装饰器：name 为规范名，aliases 为别名（含中文）；export_meta 返回导出附带字段。"""
+def _register_command(name, aliases=(), export_meta=None, summarize=None):
+    """命令注册装饰器：name 为规范名，aliases 为别名（含中文）；
+    export_meta 返回导出附带字段，summarize 由结果行计算结论字段。"""
 
     def _decorator(run_fn):
         _COMMAND_SPECS[name] = {
             "run": run_fn,
             "export_meta": export_meta or (lambda args: {"command": name}),
+            "summarize": summarize,
         }
         for alias in aliases:
             _ALIAS_TO_CANONICAL[alias] = name
@@ -325,10 +369,39 @@ def _rows_linear(results):
     ]
 
 
+def _rows_rbw_switch(results, span_ratio):
+    """原始结果 {rbw: delta_db} → 导出行（含该点对应的扫频宽度）。"""
+    return [
+        {"rbw_hz": rbw, "span_hz": span_ratio * rbw, "delta_db": delta}
+        for rbw, delta in results.items()
+    ]
+
+
+def _summarize_rbw_switch(rows):
+    """结论字段：转换影响取各切换点 Δ 的最大绝对值。"""
+    if not rows:
+        return {}
+    worst = max(rows, key=lambda r: abs(r["delta_db"]))
+    return {
+        "max_abs_delta_db": round(abs(worst["delta_db"]), 3),
+        "max_abs_delta_at_rbw_hz": worst["rbw_hz"],
+    }
+
+
 def _dispatch(args):
     """会话管理 + 统一导出/部分结果导出的执行骨架。"""
     canonical = _ALIAS_TO_CANONICAL.get(args.command, args.command)
     cmd = _COMMAND_SPECS[canonical]
+
+    def _export_data(rows, partial=False):
+        data = {**cmd["export_meta"](args), "results": rows}
+        summarize = cmd.get("summarize")
+        if summarize:
+            data.update(summarize(rows))
+        if partial:
+            data["partial"] = True
+        return data
+
     with visa_session(args.sg_addr, args.sa_addr, dry_run=args.dry_run) as (sig, spec):
         try:
             rows = cmd["run"](sig, spec, args)
@@ -337,16 +410,14 @@ def _dispatch(args):
             logger.error("测量中断: %s", e)
             if args.output and partial:
                 try:
-                    export_results(args.output, {
-                        **cmd["export_meta"](args), "results": partial, "partial": True,
-                    })
+                    export_results(args.output, _export_data(partial, partial=True))
                     logger.info("已导出已完成 %d 个校准点的部分结果: %s",
                                 len(partial), args.output)
                 except Exception as ex:
                     logger.error("部分结果导出失败: %s", ex)
             return 1
     if args.output:
-        export_results(args.output, {**cmd["export_meta"](args), "results": rows})
+        export_results(args.output, _export_data(rows))
     return 0
 
 
@@ -391,6 +462,53 @@ def _cmd_bw60(sig, spec, args):
     rows = _rows_bw60(results)
     for row in rows:
         logger.info("  设定 RBW=%d Hz → -60 dB 带宽: %.1f Hz", row["rbw_hz"], row["bw60_hz"])
+    return rows
+
+
+@_register_command("rbw-switch", aliases=("rbw转换影响", "分辨力带宽转换影响"),
+                   export_meta=lambda args: {
+                       "command": "rbw-switch",
+                       "carrier_hz": args.carrier,
+                       "ref_rbw_hz": args.ref_rbw,
+                       "span_ratio": args.span_ratio,
+                       "ref_level_dbm": args.ref_level,
+                       "atten_db": args.atten,
+                       "sg_power_dbm": args.sg_power,
+                   },
+                   summarize=_summarize_rbw_switch)
+def _cmd_rbw_switch(sig, spec, args):
+    logger.info("\n===== 分辨力带宽转换影响（JJF1396 6.12）=====")
+    logger.info("  校准信号频率: %.0f Hz", args.carrier)
+    logger.info("  信号源电平:   %s dBm（6.12.2）", args.sg_power)
+    logger.info("  参考电平:     %s dBm，输入衰减 %s dB（6.12.3）", args.ref_level, args.atten)
+    logger.info("  基准 RBW:     %s Hz，S/RBW = %s（6.12.3）", args.ref_rbw, args.span_ratio)
+    logger.info("  待切换 RBW:   %s Hz", args.rbw_list)
+    logger.info("")
+    try:
+        results = cal_rbw_switch(
+            spec, sig,
+            carrier_freq_hz=args.carrier,
+            rbw_list=args.rbw_list,
+            ref_rbw=args.ref_rbw,
+            span_ratio=args.span_ratio,
+            ref_level_dbm=args.ref_level,
+            atten_db=args.atten,
+            sg_power_dbm=args.sg_power,
+            settle_s=args.settle,
+        )
+    except MeasurementError as e:
+        raise MeasurementError(
+            str(e), partial_results=_rows_rbw_switch(e.partial_results or {}, args.span_ratio)) from e
+
+    logger.info("\n===== 测量结果 =====")
+    rows = _rows_rbw_switch(results, args.span_ratio)
+    for row in rows:
+        logger.info("  RBW %s Hz（Span %.0f Hz）→ 标记增量峰值 %+.3f dB",
+                    row["rbw_hz"], row["span_hz"], row["delta_db"])
+    summary = _summarize_rbw_switch(rows)
+    if summary:
+        logger.info("  分辨力带宽转换影响（max|Δ|）: %.3f dB @ RBW=%s Hz",
+                    summary["max_abs_delta_db"], summary["max_abs_delta_at_rbw_hz"])
     return rows
 
 

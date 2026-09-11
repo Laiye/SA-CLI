@@ -359,3 +359,60 @@ def test_main_shows_point_progress(monkeypatch, caplog):
     assert rc == 0
     assert "[1/2] 测量 RBW=100.0 Hz" in caplog.text
     assert "[2/2] 测量 RBW=1000.0 Hz" in caplog.text
+
+
+# ---------- 分辨力带宽转换影响（JJF1396 6.12）----------
+
+def test_main_rbw_switch_end_to_end(monkeypatch, tmp_path):
+    import main
+    _patch_rm(monkeypatch)
+    out = tmp_path / "rs.json"
+    rc = main.main(["rbw-switch", "-b", "100", "1000", "--output", str(out)])
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["command"] == "rbw-switch"
+    assert data["ref_rbw_hz"] == 30000
+    assert data["span_ratio"] == 10
+    assert data["ref_level_dbm"] == -15
+    assert data["sg_power_dbm"] == -20
+    assert len(data["results"]) == 2
+    assert data["results"][0]["rbw_hz"] == 100
+    assert data["results"][0]["span_hz"] == 1000        # S/RBW = 10
+    assert data["max_abs_delta_db"] == 0.0              # 假仪器恒返回 0.0
+    assert data["max_abs_delta_at_rbw_hz"] == 100
+
+
+def test_main_rbw_switch_chinese_alias(monkeypatch):
+    import main
+    _patch_rm(monkeypatch)
+    assert main.main(["分辨力带宽转换影响", "-b", "100"]) == 0
+
+
+def test_parser_rbw_switch_rejects_bad_args():
+    with pytest.raises(SystemExit):
+        _parse("rbw-switch", "--span-ratio", "0")
+    with pytest.raises(SystemExit):
+        _parse("rbw-switch", "-b", "0")
+
+
+def test_parser_rbw_switch_defaults():
+    args = _parse("rbw-switch")
+    assert args.ref_rbw == 30000
+    assert args.span_ratio == 10
+    assert args.rbw_list == [100, 300, 1000, 3000, 10000, 30000, 100000, 300000, 1000000]
+
+
+def test_main_rbw_switch_dry_run_prints_base_and_switched_rbw(monkeypatch, caplog):
+    import logging
+
+    import main
+    import instruments
+    monkeypatch.setattr(
+        instruments.pyvisa, "ResourceManager",
+        lambda: (_ for _ in ()).throw(AssertionError("dry-run 不应创建 ResourceManager")))
+    with caplog.at_level(logging.INFO):
+        rc = main.main(["rbw-switch", "-b", "100", "--dry-run"])
+    assert rc == 0
+    assert ":BANDwidth:RESolution 30000.0" in caplog.text   # 基准 RBW（6.12.3）
+    assert ":BANDwidth:RESolution 100.0" in caplog.text     # 切换点
+    assert ":FREQuency:SPAN 1000.0" in caplog.text          # S/RBW = 10

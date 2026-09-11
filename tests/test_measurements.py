@@ -6,12 +6,13 @@ import math
 
 import pytest
 
+import config
 import measurements
 from conftest import FakeResourceManager, FakeVisaResource
 from instruments import Instrument
 from measurements import (MeasurementError, _find_edge, cal_bw60,
                           cal_linear_scale, cal_log_scale, cal_rbw,
-                          cal_ssb_phase_noise, cal_sweep_width)
+                          cal_rbw_switch, cal_ssb_phase_noise, cal_sweep_width)
 
 
 class ShapeSA(FakeVisaResource):
@@ -534,3 +535,104 @@ def test_point_progress_second_point_has_eta(caplog):
         progress.begin(2, "校准点 B")
     assert "[2/3] 校准点 B（已用 " in caplog.text
     assert "预计剩余" in caplog.text
+
+
+# ---------- 分辨力带宽转换影响（JJF1396 6.12）----------
+
+class RbwSwitchSA(FakeVisaResource):
+    """模拟 RBW 切换的幅度影响：增量模式下 marker Y 返回该 RBW 对应的 Δ。"""
+
+    def __init__(self, deltas=None, default_delta=0.0):
+        super().__init__()
+        self.deltas = dict(deltas or {})
+        self.default_delta = default_delta
+        self.current_rbw = None
+        self.delta_mode = False
+        self.rbws = []
+        self.spans = []
+
+    def write(self, command):
+        if command.startswith(":BANDwidth:RESolution "):
+            self.current_rbw = float(command.split()[-1])
+            self.rbws.append(self.current_rbw)
+        elif command.startswith(":FREQuency:SPAN "):
+            self.spans.append(float(command.split()[-1]))
+        elif command == ":CALCulate:MARKer1:MODE DELTa":
+            self.delta_mode = True
+        elif command == ":CALCulate:MARKer1:MODE POS":
+            self.delta_mode = False
+        super().write(command)
+
+    def query(self, command):
+        if command == ":CALCulate:MARKer1:Y?":
+            if self.delta_mode:
+                return str(self.deltas.get(self.current_rbw, self.default_delta))
+            return str(0.0)
+        return super().query(command)
+
+
+def make_rbw_switch_pair(deltas=None, default_delta=0.0):
+    sa_res = RbwSwitchSA(deltas=deltas, default_delta=default_delta)
+    sg_res = FakeVisaResource()
+    sa = Instrument("sa", "spectrum_analyzer.json", rm=FakeResourceManager(sa_res))
+    sg = Instrument("sg", "signal_generator.json", rm=FakeResourceManager(sg_res))
+    return sg, sa, sa_res
+
+
+def test_cal_rbw_switch_records_delta_per_rbw():
+    sg, sa, sa_res = make_rbw_switch_pair(
+        deltas={100.0: 0.12, 1000.0: -0.35, 10000.0: 0.02})
+    results = cal_rbw_switch(sa, sg, rbw_list=[100, 1000, 10000])
+    assert list(results.keys()) == [100, 1000, 10000]
+    assert results[100] == pytest.approx(0.12)
+    assert results[1000] == pytest.approx(-0.35)
+    assert results[10000] == pytest.approx(0.02)
+
+
+def test_cal_rbw_switch_keeps_span_ratio():
+    """扫频宽度始终 = S/RBW × RBW：基准点与每个切换点都按同一比率设置。"""
+    sg, sa, sa_res = make_rbw_switch_pair()
+    cal_rbw_switch(sa, sg, rbw_list=[100, 1000], ref_rbw=30e3, span_ratio=5)
+    assert sa_res.spans == [5 * 30e3, 5 * 100, 5 * 1000]
+    assert sa_res.rbws[0] == pytest.approx(30e3)          # 先设置基准 RBW（6.12.3）
+    assert sa_res.rbws[-2:] == [100.0, 1000.0]
+
+
+def test_cal_rbw_switch_establishes_delta_reference_once():
+    """Δ 参考只在基准状态建立一次，切换过程中不重置。"""
+    sg, sa, sa_res = make_rbw_switch_pair()
+    cal_rbw_switch(sa, sg, rbw_list=[100, 1000, 10000])
+    assert sa_res.writes.count(":CALCulate:MARKer1:MODE DELTa") == 1
+    assert sa_res.writes.count(":CALCulate:MARKer1:MODE POS") == 0
+
+
+def test_cal_rbw_switch_default_ref_rbw():
+    sg, sa, sa_res = make_rbw_switch_pair()
+    cal_rbw_switch(sa, sg, rbw_list=[1000])
+    assert sa_res.rbws[0] == pytest.approx(config.DEFAULT_RBW_SWITCH_REF)   # 30 kHz
+
+
+class FailOnRbwSA(RbwSwitchSA):
+    """指定 RBW 的增量读数抛错，用于验证部分结果。"""
+
+    def __init__(self, fail_rbw):
+        super().__init__()
+        self.fail_rbw = fail_rbw
+
+    def query(self, command):
+        if (command == ":CALCulate:MARKer1:Y?" and self.delta_mode
+                and self.current_rbw == self.fail_rbw):
+            raise OSError("simulated read failure")
+        return super().query(command)
+
+
+def test_cal_rbw_switch_carries_partial_results_on_failure():
+    sa_res = FailOnRbwSA(fail_rbw=1000.0)
+    sa_res.deltas = {100.0: 0.1}
+    sg_res = FakeVisaResource()
+    sa = Instrument("sa", "spectrum_analyzer.json", rm=FakeResourceManager(sa_res))
+    sg = Instrument("sg", "signal_generator.json", rm=FakeResourceManager(sg_res))
+    with pytest.raises(MeasurementError) as ei:
+        cal_rbw_switch(sa, sg, rbw_list=[100, 1000])
+    assert set(ei.value.partial_results.keys()) == {100}
+    assert ":OUTPut:STATe OFF" in sg_res.writes          # 失败路径也应关断 RF

@@ -20,6 +20,9 @@ def test_cal_point_defaults_from_config():
     ]
     assert config.cal_point_defaults("log-scale-1db", []) == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     assert config.cal_point_defaults("log-scale-10db", []) == [10, 20, 30, 40, 50, 60, 70, 80]
+    assert config.cal_point_defaults("rbw-switch", []) == [
+        100, 300, 1000, 3000, 10000, 30000, 100000, 300000, 1000000,
+    ]
 
 
 def test_cal_point_defaults_fallback_for_unknown_command():
