@@ -4,6 +4,7 @@
 
 import argparse
 import logging
+import math
 import sys
 
 import config
@@ -12,7 +13,7 @@ from instruments import visa_session
 from measurements import (MeasurementError, cal_bw60, cal_linear_scale,
                           cal_log_scale, cal_rbw, cal_rbw_switch,
                           cal_ssb_phase_noise, cal_sweep_width)
-from report import export_results
+from report import export_results, validate_output_path
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,10 @@ def _parse_number(text):
         raise argparse.ArgumentTypeError(
             f"不支持小写 'm'（易与毫混淆），兆请写 'M': {text!r}")
     try:
-        return float(raw) * multiplier
+        value = float(raw) * multiplier
+        if not math.isfinite(value):
+            raise ValueError("数值必须有限")
+        return value
     except ValueError:
         raise argparse.ArgumentTypeError(
             f"无法解析为数值（支持 30k / 2.4M / 1G / 50e6 写法）: {text!r}") from None
@@ -424,6 +428,19 @@ def _summarize_rbw_switch(rows):
 def _dispatch(args):
     """会话管理 + 统一导出/部分结果导出的执行骨架。"""
     canonical = _ALIAS_TO_CANONICAL.get(args.command, args.command)
+    if args.output:
+        validate_output_path(args.output)
+    if canonical in ("log-scale", "linear-scale") and args.points is None:
+        key = "log-scale-{}db".format(args.scale) if canonical == "log-scale" else canonical
+        fallback = (config.DEFAULT_LOG_SCALE_1DB_POINTS if args.scale == 1
+                    else config.DEFAULT_LOG_SCALE_10DB_POINTS) if canonical == "log-scale" else config.DEFAULT_LINEAR_SCALE_POINTS
+        args.points = config.cal_point_defaults(key, fallback)
+    for name in ("offset", "rbw_list", "span", "points"):
+        points = getattr(args, name, None)
+        if isinstance(points, list):
+            config.validate_points(points, name)
+    if getattr(args, "average_count", 0) < 0:
+        raise ValueError("平均次数不能为负数")
     cmd = _COMMAND_SPECS[canonical]
 
     def _export_data(rows, partial=False):
@@ -715,7 +732,12 @@ def _cmd_linear_scale(sig, spec, args):
 
 
 def main(argv=None):
-    parser = build_parser()
+    try:
+        parser = build_parser()
+    except ValueError as exc:
+        setup_logging(False)
+        logger.error("配置错误: %s", exc)
+        return 1
     args = parser.parse_args(argv)
     setup_logging(args.verbose)
 
@@ -723,6 +745,7 @@ def main(argv=None):
         parser.print_help()
         return 0
 
+    original_sleep = measurements._sleep
     if args.dry_run:
         measurements.disable_sleeps()
         logger.info("===== DRY-RUN：不连接仪器，以下为将发送的 SCPI 命令序列 =====")
@@ -733,6 +756,8 @@ def main(argv=None):
         logger.error("程序异常: %s", e)
         logger.debug("详细堆栈:", exc_info=True)
         return 1
+    finally:
+        measurements._sleep = original_sleep
 
 
 if __name__ == "__main__":

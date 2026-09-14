@@ -644,9 +644,9 @@ class SpectrumAnalyzer(Instrument):
 
 所有"等待仪器就绪"均基于 IEEE 488.2 标准通用命令 `*OPC?`（跨厂商兼容，PSA 系列与 N5183B/E8257D/E4438C 均支持），由 `measurements.py` 中三个帮助函数实现：
 
-- **`_wait_opc(instr, min_sleep, timeout_s)`** — 先保底等待 `min_sleep`（覆盖 preset 内部校准等 `*OPC?` 未跟踪的操作），再轮询 `*OPC?` 返回 1；超时仅告警不抛异常，按原路径降级继续。
+- **`_wait_opc(instr, min_sleep, timeout_s)`** — 先保底等待 `min_sleep`（覆盖 preset 内部校准等 `*OPC?` 未跟踪的操作），再轮询 `*OPC?` 返回 1；超时或通信失败抛出异常并停止当前校准点；单次 VISA 查询超时受剩余 OPC 预算限制，结束后恢复原 VISA 超时。
 - **`_wait_sweep(spec_an, min_sleep, timeout_s)`** — 等待频谱仪完成一次扫描：切单次扫描（`:INITiate:CONTinuous OFF`）→ 触发（`:INITiate:IMMediate`，即 `init_sweep` action）→ `*OPC?` → 恢复连续扫描。**连续扫描模式下 `*OPC?` 语义不可靠（可能立即返回或永久阻塞），必须搭配单次扫描模式使用**。
-- **`_opc_done(instr)`** — `*OPC?` 返回 1 的判定，I/O 异常或非数值返回安全降级为未完成。
+- **`_opc_done(instr)`** — `*OPC?` 返回 1 的判定，用于判定完成状态；实际等待流程遇到 I/O 异常会中止当前校准点。
 
 等待策略：**批量下发连续配置后一次性等待**（如 `cal_rbw` 每点的 7 条频谱仪配置合并为一次 `_wait_sweep`），取代原来的逐条固定 sleep；`*OPC?` 保证扫描真正完成后再读 marker，既提速又避免"固定等待短于实际扫描时间导致读到过期数据"。超时上限与 VISA 超时一致（频谱仪 60s、信号源 15s）。
 
@@ -676,3 +676,12 @@ class SpectrumAnalyzer(Instrument):
 ## 许可证
 
 MIT
+
+
+## 结果可靠性与输入校验
+
+- 数值参数和仪器数值响应必须有限；拒绝 `nan`、`inf` 和溢出数值。校准点必须为非空、不重复的正数列表，JSON 配置同样受校验。
+- OPC 超时、通信失败、边沿搜索或峰值调整未收敛时，中止测量并返回非零退出码。已完成校准点仍按部分结果机制导出。
+- CSV 每行包含命令元数据、汇总字段和 `partial` 标记；`True` 表示结果不完整，`False` 表示完整结果。JSON 保留原有结构。
+- 输出扩展名和父目录在连接仪器之前检查。JSON/CSV 先写入同目录临时文件，成功后替换目标文件；写入失败保留已有文件。
+- `--dry-run` 使用模拟读数，跳过峰值收敛判定；输出不能作为实测结果。调用结束后恢复原等待函数，允许同一进程继续执行真实测量。

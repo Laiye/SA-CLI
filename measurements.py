@@ -95,21 +95,33 @@ def _opc_done(instr):
 
 
 def _wait_opc(instr, min_sleep=0.0, timeout_s=OPC_TIMEOUT_S):
-    """
-    等待仪器 *OPC? = 1（挂起操作全部完成）。
-
-    先保底 sleep min_sleep（覆盖 preset 内部校准等 OPC 未跟踪的操作），
-    再轮询 *OPC?；超时返回 False 并告警，不抛异常（调用方按原路径继续）。
-    """
+    """等待完成；超时或通信失败中止，单次 I/O 受剩余预算限制。"""
     if min_sleep > 0:
         _sleep(min_sleep)
     deadline = time.monotonic() + timeout_s
-    while not _opc_done(instr):
-        if time.monotonic() >= deadline:
-            logger.warning("OPC 等待超时（%.0f s）", timeout_s)
-            return False
-        _sleep(OPC_POLL_S)
-    return True
+    resource = instr.instr
+    original_timeout = resource.timeout if resource is not None else None
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"OPC 等待超时（{timeout_s:g} s）")
+            if resource is not None:
+                budget_ms = max(1, int(remaining * 1000))
+                resource.timeout = (budget_ms if original_timeout is None
+                                    else min(original_timeout, budget_ms))
+            try:
+                done = float(instr.opc()) == 1.0
+            except Exception as exc:
+                raise RuntimeError("OPC 查询失败，停止当前校准点") from exc
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"OPC 等待超时（{timeout_s:g} s）")
+            if done:
+                return True
+            _sleep(min(OPC_POLL_S, max(0, deadline - time.monotonic())))
+    finally:
+        if resource is not None:
+            resource.timeout = original_timeout
 
 
 def _wait_sweep(spec_an, min_sleep=0.0, timeout_s=OPC_TIMEOUT_S):
@@ -121,10 +133,6 @@ def _wait_sweep(spec_an, min_sleep=0.0, timeout_s=OPC_TIMEOUT_S):
         spec_an.set_sweep_single()
         spec_an.init_sweep()
         return _wait_opc(spec_an, min_sleep=min_sleep, timeout_s=timeout_s)
-    except Exception as e:
-        logger.warning("等待扫描完成失败: %s", e)
-        _sleep(1.0)
-        return False
     finally:
         try:
             spec_an.set_sweep_cont()
@@ -158,6 +166,7 @@ def _collect_points(points, measure_one, action, describe=None):
     """逐点执行 measure_one(point) 并收集结果；每点开始前打印进度/ETA
     （describe(point) 提供该点的说明文本），任一点失败抛 MeasurementError
     并携带已完成点的部分结果（point → 值的映射）。"""
+    points = config.validate_points(points)
     results = {}
     progress = PointProgress(len(points))
     for i, point in enumerate(points, start=1):
@@ -306,7 +315,7 @@ def _find_edge(sig_gen, spec_an, carrier_freq_hz, rbw, direction, label,
         logger.info("  粗搜 %s侧: %.1f Hz (delta=%.3f, %d 步)", label, freq, delta, i + 1)
         break
     else:
-        logger.warning("  %s侧粗搜未收敛（%.1f Hz）", label, freq)
+        raise RuntimeError(f"{label}侧粗搜未收敛: freq={freq}, delta={delta}, steps={max_steps}")
 
     # ---- Phase 2: 精调 ----
     step = rbw / fine_step_divisor
@@ -335,8 +344,7 @@ def _find_edge(sig_gen, spec_an, carrier_freq_hz, rbw, direction, label,
         sig_gen.set_freq(freq)
         _wait_opc(sig_gen, min_sleep=0.0, timeout_s=SG_OPC_TIMEOUT_S)
         _wait_sweep(spec_an, min_sleep=settle_time_s)
-    logger.warning("  %s侧精调结束: %.1f Hz", label, freq)
-    return freq
+    raise RuntimeError(f"{label}侧精调未收敛: freq={freq}, delta={delta}, steps={max_steps}")
 
 
 def cal_rbw(spec_an, sig_gen, carrier_freq_hz=config.DEFAULT_CARRIER, rbw_list=None):
@@ -725,6 +733,9 @@ def cal_log_scale(spec_an, sig_gen, carrier_freq_hz=50e6, scale_db_per_div=1,
         sig_gen.set_power(current_power)
         _wait_opc(sig_gen, min_sleep=0.2, timeout_s=SG_OPC_TIMEOUT_S)
         _wait_sweep(spec_an, min_sleep=min(settle_s, 0.5))
+    else:
+        if not sig_gen.dry_run:
+            raise RuntimeError(f"峰值调整未收敛: peak={peak}, error={error}, steps=6")
     logger.info("  峰值调整至 %.2f dBm（SG 电平 %.2f dBm）", peak, current_power)
 
     # 4. 打开 marker delta，以当前峰值位置为参考
@@ -798,6 +809,9 @@ def cal_linear_scale(spec_an, sig_gen, carrier_freq_hz=50e6, points=None,
         sig_gen.set_power(current_power)
         _wait_opc(sig_gen, min_sleep=0.2, timeout_s=SG_OPC_TIMEOUT_S)
         _wait_sweep(spec_an, min_sleep=min(settle_s, 0.5))
+    else:
+        if not sig_gen.dry_run:
+            raise RuntimeError(f"峰值调整未收敛: peak={peak_mv}, error={peak_mv - target_peak_mv}, steps=6")
     logger.info("  峰值调整至 %.3f mV（SG 电平 %.2f dBm）", peak_mv, current_power)
 
     # 4. 逐点衰减，直接读取 marker 值（改变电平不导致频率偏移，无需重新找峰值）

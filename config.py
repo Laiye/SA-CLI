@@ -3,6 +3,7 @@
 """默认配置：可通过环境变量覆盖仪器地址，通过 cal_points.json 配置默认校准点。"""
 
 import json
+import math
 import os
 
 CAL_POINTS_FILE = "cal_points.json"
@@ -81,7 +82,7 @@ def cal_points():
 def cal_point_defaults(command, fallback):
     """返回该校准项目的默认校准点：cal_points.json 配置优先，否则用代码兜底。"""
     points = cal_points().get(command)
-    return fallback if points is None else points
+    return validate_points(fallback if points is None else points, command)
 
 
 def sg_addr():
@@ -90,3 +91,16 @@ def sg_addr():
 
 def sa_addr():
     return os.environ.get("SA_CLI_SA_ADDR", DEFAULT_SA_ADDR)
+
+
+def validate_points(points, name="校准点"):
+    """校准点必须为非空、不重复的有限正数列表。"""
+    if not isinstance(points, (list, tuple)) or not points:
+        raise ValueError(f"{name} 必须为非空数值列表")
+    for value in points:
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value <= 0):
+            raise ValueError(f"{name} 必须包含有限正数: {value!r}")
+    if len(set(points)) != len(points):
+        raise ValueError(f"{name} 不允许重复校准点")
+    return list(points)

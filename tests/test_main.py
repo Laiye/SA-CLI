@@ -237,6 +237,9 @@ def test_main_linear_scale_end_to_end(monkeypatch, tmp_path):
     """线性刻度 CLI：默认校准点 4~20 dB 共 5 个。"""
     import main
     _patch_rm(monkeypatch)
+    original_query = _FakeResource.query
+    monkeypatch.setattr(_FakeResource, "query", lambda self, cmd:
+                        "0.2236" if "MARKer1:Y?" in cmd else original_query(self, cmd))
     out = tmp_path / "ln.json"
     rc = main.main(["linear-scale", "--output", str(out)])
     assert rc == 0

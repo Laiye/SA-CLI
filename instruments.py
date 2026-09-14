@@ -4,6 +4,7 @@
 
 import json
 import logging
+import math
 import os
 from contextlib import contextmanager
 
@@ -102,7 +103,10 @@ class Instrument:
                         if returns_type == 'str':
                             return result
                         try:
-                            return float(result)
+                            value = float(result)
+                            if not math.isfinite(value):
+                                raise ValueError("非有限数值")
+                            return value
                         except ValueError:
                             raise ValueError(
                                 f"查询 '{name}' 返回非数值结果: {result!r}"
