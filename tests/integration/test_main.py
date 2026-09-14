@@ -1,14 +1,16 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """结果导出与 CLI 入口的测试。"""
+
+from sa_cli.instruments import Instrument
+from sa_cli.measurements import common, bandwidth
+from sa_cli.instruments import session
 
 import csv
 import json
 
 import pytest
 
-import measurements
-from report import export_results
+from sa_cli import measurements
+from sa_cli.report import export_results
 
 
 def test_export_json(tmp_path):
@@ -87,16 +89,16 @@ class _FakeRM:
 
 @pytest.fixture(autouse=True)
 def _no_sleep(monkeypatch):
-    monkeypatch.setattr(measurements, "_sleep", lambda s: None)
+    monkeypatch.setattr(Instrument, "sleep", lambda self, s: None)
 
 
 def _patch_rm(monkeypatch):
-    import instruments
-    monkeypatch.setattr(instruments.pyvisa, "ResourceManager", lambda: _FakeRM())
+    from sa_cli import instruments
+    monkeypatch.setattr(session.pyvisa, "ResourceManager", lambda: _FakeRM())
 
 
 def test_main_rbw_end_to_end(monkeypatch, tmp_path):
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
     out = tmp_path / "r.csv"
     rc = main.main(["rbw", "--carrier", "50e6", "--rbw-list", "100",
@@ -109,7 +111,7 @@ def test_main_rbw_end_to_end(monkeypatch, tmp_path):
 
 
 def test_main_bw60_end_to_end(monkeypatch, tmp_path):
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
     out = tmp_path / "b.json"
     rc = main.main(["bw60", "--carrier", "50e6", "--rbw-list", "1000",
@@ -120,14 +122,14 @@ def test_main_bw60_end_to_end(monkeypatch, tmp_path):
 
 
 def test_main_phase_noise_end_to_end(monkeypatch, tmp_path):
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
     rc = main.main(["phase-noise", "-o", "100", "--output", str(tmp_path / "p.json")])
     assert rc == 0
 
 
 def test_main_sweep_width_end_to_end(monkeypatch, tmp_path):
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
     out = tmp_path / "s.json"
     rc = main.main(["sweep-width", "-s", "0.5e9", "1e9", "--output", str(out)])
@@ -139,14 +141,14 @@ def test_main_sweep_width_end_to_end(monkeypatch, tmp_path):
 
 
 def test_main_sweep_width_sw_alias_end_to_end(monkeypatch, tmp_path):
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
     rc = main.main(["sw", "-s", "1.6e9", "2e9", "--output", str(tmp_path / "s2.json")])
     assert rc == 0
 
 
 def test_main_no_command_prints_help(capsys):
-    import main
+    from sa_cli.cli import main, parser, commands
     rc = main.main([])
     assert rc == 0
     assert "usage" in capsys.readouterr().out.lower()
@@ -155,13 +157,13 @@ def test_main_no_command_prints_help(capsys):
 def test_main_returns_error_on_exception(monkeypatch, caplog):
     import logging
 
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
 
     def boom(*args, **kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(main, "cal_rbw", boom)
+    monkeypatch.setattr(commands, "cal_rbw", boom)
     with caplog.at_level(logging.ERROR):
         rc = main.main(["rbw", "--rbw-list", "100"])
     assert rc == 1
@@ -169,7 +171,7 @@ def test_main_returns_error_on_exception(monkeypatch, caplog):
 
 
 def test_main_verbose_flag_after_subcommand(monkeypatch):
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
     rc = main.main(["rbw", "--rbw-list", "100", "--verbose"])
     assert rc == 0
@@ -177,7 +179,7 @@ def test_main_verbose_flag_after_subcommand(monkeypatch):
 
 def test_main_cli_overrides_config_defaults(monkeypatch, tmp_path):
     """CLI 传入的校准点优先于 cal_points.json 默认值。"""
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
     out = tmp_path / "o.json"
     rc = main.main(["rbw", "--rbw-list", "100", "200", "--output", str(out)])
@@ -188,7 +190,7 @@ def test_main_cli_overrides_config_defaults(monkeypatch, tmp_path):
 
 def test_main_rbw_uses_config_default_points(monkeypatch, tmp_path):
     """不传校准点时，使用 cal_points.json 中的默认校准点（rbw 共 8 个）。"""
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
     out = tmp_path / "o.json"
     rc = main.main(["rbw", "--output", str(out)])
@@ -199,7 +201,7 @@ def test_main_rbw_uses_config_default_points(monkeypatch, tmp_path):
 
 def test_main_phase_noise_multi_offset(monkeypatch, tmp_path):
     """相位噪声支持多频偏，结果逐条导出。"""
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
     out = tmp_path / "p.json"
     rc = main.main(["phase-noise", "-o", "100", "1000", "--output", str(out)])
@@ -212,7 +214,7 @@ def test_main_phase_noise_multi_offset(monkeypatch, tmp_path):
 
 def test_main_log_scale_end_to_end(monkeypatch, tmp_path):
     """对数刻度 CLI：1 dB/div 模式导出 9 个校准点。"""
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
     out = tmp_path / "l.json"
     rc = main.main(["log-scale", "--scale", "1", "--output", str(out)])
@@ -223,7 +225,7 @@ def test_main_log_scale_end_to_end(monkeypatch, tmp_path):
 
 
 def test_main_log_scale_10db_mode(monkeypatch, tmp_path):
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
     out = tmp_path / "l10.json"
     rc = main.main(["log", "--scale", "10", "--output", str(out)])
@@ -235,7 +237,7 @@ def test_main_log_scale_10db_mode(monkeypatch, tmp_path):
 
 def test_main_linear_scale_end_to_end(monkeypatch, tmp_path):
     """线性刻度 CLI：默认校准点 4~20 dB 共 5 个。"""
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
     original_query = _FakeResource.query
     monkeypatch.setattr(_FakeResource, "query", lambda self, cmd:
@@ -252,8 +254,8 @@ def test_main_linear_scale_end_to_end(monkeypatch, tmp_path):
 # ---------- CLI 参数校验 ----------
 
 def _parse(command, *args):
-    import main
-    return main.build_parser().parse_args([command, *args])
+    from sa_cli.cli import main, parser, commands
+    return parser.build_parser().parse_args([command, *args])
 
 
 def test_parser_rejects_zero_offset():
@@ -296,10 +298,10 @@ def test_main_dry_run_prints_scpi_without_visa(monkeypatch, caplog):
     """dry-run 不创建 VISA ResourceManager，完整跑流程并打印 SCPI 序列。"""
     import logging
 
-    import main
-    import instruments
+    from sa_cli.cli import main, parser, commands
+    from sa_cli import instruments
     monkeypatch.setattr(
-        instruments.pyvisa, "ResourceManager",
+        session.pyvisa, "ResourceManager",
         lambda: (_ for _ in ()).throw(AssertionError("dry-run 不应创建 ResourceManager")))
     with caplog.at_level(logging.INFO):
         rc = main.main(["rbw", "--rbw-list", "100", "--dry-run"])
@@ -315,14 +317,14 @@ def test_main_dry_run_prints_scpi_without_visa(monkeypatch, caplog):
 
 def test_main_exports_partial_results_on_interrupt(monkeypatch, tmp_path):
     """中途异常（MeasurementError）时应把已完成点写入 --output 并标记 partial。"""
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
 
     def _boom(spec, sig, carrier_freq_hz=None, rbw_list=None):
         raise measurements.MeasurementError(
             "测试中断", partial_results={100: 100.3, 1000: 998.5})
 
-    monkeypatch.setattr(main, "cal_rbw", _boom)
+    monkeypatch.setattr(commands, "cal_rbw", _boom)
     out = tmp_path / "partial.json"
     rc = main.main(["rbw", "--rbw-list", "100", "1000", "--output", str(out)])
     assert rc == 1
@@ -337,14 +339,14 @@ def test_main_no_output_skips_partial_export(monkeypatch, caplog):
     """未指定 --output 时部分结果不落盘，仅记录错误并返回 1。"""
     import logging
 
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
 
     def _boom(spec, sig, carrier_freq_hz=None, rbw_list=None):
         raise measurements.MeasurementError(
             "测试中断", partial_results={100: 100.3})
 
-    monkeypatch.setattr(main, "cal_rbw", _boom)
+    monkeypatch.setattr(commands, "cal_rbw", _boom)
     with caplog.at_level(logging.ERROR):
         rc = main.main(["rbw", "--rbw-list", "100"])
     assert rc == 1
@@ -355,7 +357,7 @@ def test_main_shows_point_progress(monkeypatch, caplog):
     """多校准点运行时逐点打印 [i/N] 进度行。"""
     import logging
 
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
     with caplog.at_level(logging.INFO):
         rc = main.main(["rbw", "--rbw-list", "100", "1000"])
@@ -367,7 +369,7 @@ def test_main_shows_point_progress(monkeypatch, caplog):
 # ---------- 分辨力带宽转换影响（JJF1396 6.12）----------
 
 def test_main_rbw_switch_end_to_end(monkeypatch, tmp_path):
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
     out = tmp_path / "rs.json"
     rc = main.main(["rbw-switch", "-b", "100", "1000", "--output", str(out)])
@@ -386,7 +388,7 @@ def test_main_rbw_switch_end_to_end(monkeypatch, tmp_path):
 
 
 def test_main_rbw_switch_chinese_alias(monkeypatch):
-    import main
+    from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
     assert main.main(["分辨力带宽转换影响", "-b", "100"]) == 0
 
@@ -408,10 +410,10 @@ def test_parser_rbw_switch_defaults():
 def test_main_rbw_switch_dry_run_prints_base_and_switched_rbw(monkeypatch, caplog):
     import logging
 
-    import main
-    import instruments
+    from sa_cli.cli import main, parser, commands
+    from sa_cli import instruments
     monkeypatch.setattr(
-        instruments.pyvisa, "ResourceManager",
+        session.pyvisa, "ResourceManager",
         lambda: (_ for _ in ()).throw(AssertionError("dry-run 不应创建 ResourceManager")))
     with caplog.at_level(logging.INFO):
         rc = main.main(["rbw-switch", "-b", "100", "--dry-run"])
@@ -424,23 +426,23 @@ def test_main_rbw_switch_dry_run_prints_base_and_switched_rbw(monkeypatch, caplo
 # ---------- 数值后缀（k / M / G）----------
 
 def test_parse_number_helper():
-    import main
-    assert main._parse_number("30k") == pytest.approx(30000.0)
-    assert main._parse_number("1K") == pytest.approx(1000.0)
-    assert main._parse_number("2.4G") == pytest.approx(2.4e9)
-    assert main._parse_number("1.5M") == pytest.approx(1.5e6)
-    assert main._parse_number("-20k") == pytest.approx(-20000.0)
-    assert main._parse_number("50e6") == pytest.approx(5e7)      # 科学计数法仍可用
-    assert main._parse_number(" 300 ") == pytest.approx(300.0)
+    from sa_cli.cli import main, parser, commands
+    assert parser._parse_number("30k") == pytest.approx(30000.0)
+    assert parser._parse_number("1K") == pytest.approx(1000.0)
+    assert parser._parse_number("2.4G") == pytest.approx(2.4e9)
+    assert parser._parse_number("1.5M") == pytest.approx(1.5e6)
+    assert parser._parse_number("-20k") == pytest.approx(-20000.0)
+    assert parser._parse_number("50e6") == pytest.approx(5e7)      # 科学计数法仍可用
+    assert parser._parse_number(" 300 ") == pytest.approx(300.0)
 
 
 def test_parse_number_helper_rejects_bad_input():
     import argparse
 
-    import main
+    from sa_cli.cli import main, parser, commands
     for bad in ("", "abc", "100m", "30x", "-"):
         with pytest.raises(argparse.ArgumentTypeError):
-            main._parse_number(bad)
+            parser._parse_number(bad)
 
 
 def test_parser_si_suffix_on_lists():

@@ -4,13 +4,12 @@
 
 import json
 import logging
-import math
-import os
-from contextlib import contextmanager
+import time
 
 import pyvisa
 
-import config
+from sa_cli import config
+from sa_cli.validation import finite_float
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +17,10 @@ logger = logging.getLogger(__name__)
 class Instrument:
     """从 JSON 文件加载 actions，并动态生成控制方法。"""
 
-    def __init__(self, resource_address, json_file, rm=None, dry_run=False):
+    def __init__(self, resource_address, json_file, rm=None, dry_run=False, sleep=None):
         self.address = resource_address
         self.dry_run = dry_run
+        self._sleep_fn = (lambda _: None) if dry_run else (sleep if sleep is not None else time.sleep)
         self.rm = rm if dry_run else (rm or pyvisa.ResourceManager())
         self.instr = None
         self.actions = self._load_json(json_file)
@@ -28,16 +28,14 @@ class Instrument:
         if not dry_run:
             self._connect()
 
-    @staticmethod
-    def _resolve_json_path(json_file):
-        if os.path.isabs(json_file):
-            return json_file
-        return os.path.join(config.data_dir(), json_file)
+    def sleep(self, seconds):
+        """使用当前仪器的等待策略；dry-run 永远不等待。"""
+        self._sleep_fn(seconds)
 
     def _load_json(self, json_file):
-        json_path = self._resolve_json_path(json_file)
+        json_path = str(json_file)
         try:
-            with open(json_path, 'r', encoding='utf-8') as f:
+            with config.open_data(json_file) as f:
                 data = json.load(f)
         except FileNotFoundError:
             raise FileNotFoundError(f"JSON 文件不存在: {json_path}")
@@ -103,10 +101,7 @@ class Instrument:
                         if returns_type == 'str':
                             return result
                         try:
-                            value = float(result)
-                            if not math.isfinite(value):
-                                raise ValueError("非有限数值")
-                            return value
+                            return finite_float(result)
                         except ValueError:
                             raise ValueError(
                                 f"查询 '{name}' 返回非数值结果: {result!r}"
@@ -148,43 +143,3 @@ class Instrument:
             pass
 
 
-class SignalGenerator(Instrument):
-    def __init__(self, resource_address, rm=None, dry_run=False):
-        super().__init__(resource_address, "signal_generator.json", rm, dry_run=dry_run)
-        if not dry_run:
-            # 频率/电平稳定可能需要数秒，放宽超时到 15 秒（配合 *OPC? 等待）
-            self.instr.timeout = 15000
-
-
-class SpectrumAnalyzer(Instrument):
-    def __init__(self, resource_address, rm=None, dry_run=False):
-        super().__init__(resource_address, "spectrum_analyzer.json", rm, dry_run=dry_run)
-        if not dry_run:
-            # 频谱仪扫描可能很慢，增加超时到 60 秒
-            self.instr.timeout = 60000
-
-
-@contextmanager
-def visa_session(sg_addr, sa_addr, rm=None, dry_run=False):
-    """打开信号源与频谱仪，确保退出时资源被释放；dry_run 时不连接仪器。"""
-    rm = rm if dry_run else (rm or pyvisa.ResourceManager())
-    sig = None
-    spec = None
-    try:
-        sig = SignalGenerator(sg_addr, rm=rm, dry_run=dry_run)
-        spec = SpectrumAnalyzer(sa_addr, rm=rm, dry_run=dry_run)
-        yield sig, spec
-    finally:
-        if spec:
-            spec.close()
-        if sig:
-            try:
-                sig.rf_off()   # 兜底：正常/异常退出都确保 RF 输出关闭（dry-run 仅打印）
-            except Exception:
-                pass
-            sig.close()
-        if rm:
-            try:
-                rm.close()
-            except Exception:
-                pass

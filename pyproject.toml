@@ -17,12 +17,13 @@ dependencies = [
 dev = ["pytest>=7.0"]
 
 [project.scripts]
-sa-cli = "main:main"
+sa-cli = "sa_cli.cli.main:main"
 
-# 显式声明顶层模块，避免 setuptools 自动发现把 tests/ 当作包
-[tool.setuptools]
-py-modules = ["main", "config", "instruments", "measurements", "report"]
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"sa_cli.data" = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]

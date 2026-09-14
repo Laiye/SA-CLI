@@ -76,23 +76,45 @@ pip install -r requirements-dev.txt      # 含测试依赖
 
 ## 项目结构
 
-```
+```text
 SA-CLI/
-  main.py                  # CLI 入口（参数解析、命令注册与统一分发、结果导出/部分结果导出）
-  instruments.py           # 仪器封装（Instrument 基类 + 具体仪器 + VISA 会话管理）
-  measurements.py          # 测量算法（相位噪声 / RBW / -60dB 带宽 / 扫频宽度 / 对数·线性刻度）与 *OPC? 同步等待
-  config.py                # 默认配置（仪器地址、JSON 数据目录，支持环境变量覆盖）
-  report.py                # 测量结果导出（.json / .csv）
-  spectrum_analyzer.json   # 频谱分析仪 SCPI 指令集定义（含 init_sweep 单次扫描触发）
-  signal_generator.json    # 信号发生器 SCPI 指令集定义
-  cal_points.json          # 各命令默认校准点
-  pyproject.toml           # 项目元数据、依赖、sa-cli 入口点与 pytest 配置
-  MANIFEST.in              # sdist 打包清单（含 JSON 指令集）
-  requirements.txt         # 运行依赖（与 pyproject 保持一致，兼容非 PEP 517 场景）
-  requirements-dev.txt     # 测试依赖（pytest）
-  .gitignore               # 忽略 .venv/ 与 Python 缓存等
-  tests/                   # 单元测试（模拟 VISA，无需真实仪器）
+  src/sa_cli/
+    __main__.py              # python -m sa_cli 入口
+    cli/
+      main.py                # 日志、退出码与命令入口
+      parser.py              # 参数声明、数值解析
+      commands.py            # 命令注册、调用与结果转换
+    instruments/
+      base.py                # JSON 动作加载与 SCPI 通信
+      devices.py             # 信号源与频谱仪类型
+      session.py             # VISA 生命周期与 RF 关闭
+    measurements/
+      bandwidth.py           # RBW / -60 dB 带宽与边沿搜索
+      rbw_switch.py          # 分辨力带宽转换影响
+      phase_noise.py         # 相位噪声
+      sweep_width.py         # 扫频宽度与峰值对中
+      scale.py               # 对数 / 线性刻度
+      common.py              # 同步等待、逐点执行、进度
+    data/                    # 随包分发的两个 SCPI JSON 和 cal_points.json
+    config.py                # 配置与资源加载
+    validation.py            # 数值及校准点校验
+    errors.py                # 测量异常与部分结果
+    report.py                # JSON / CSV 原子导出
+  tests/
+    fakes.py                 # 可复用模拟 VISA 资源
+    conftest.py              # pytest fixtures
+    unit/                    # 配置、仪器与算法测试
+    integration/             # CLI、可靠性与包入口测试
+  main.py                    # 旧入口兼容转发
+  pyproject.toml             # src 包发现、入口点、依赖与包数据
+  MANIFEST.in                # 源码发行包清单
 ```
+
+安装后可用 `sa-cli`、`python -m sa_cli`；仓库内仍支持 `python main.py` 和
+`python -m main`。开发时先执行 `python -m pip install -e ".[dev]"`，测试直接导入
+已安装的 `sa_cli` 包，不再修改 Python 搜索路径。Python 调用方请将旧的顶层导入
+改为 `from sa_cli.instruments import visa_session` 等包导入。
+
 
 ## 配置
 
@@ -103,17 +125,18 @@ export SA_CLI_SG_ADDR=TCPIP::192.168.1.10::INSTR
 export SA_CLI_SA_ADDR=TCPIP::192.168.1.20::INSTR
 ```
 
-JSON 指令集与校准点的查找目录（`SA_CLI_DATA_DIR`）默认按以下顺序自动确定，一般无需设置：
+JSON 指令集与校准点默认通过 `importlib.resources` 从 `sa_cli.data` 读取，
+editable 安装和普通 wheel 安装均自带三个 JSON 文件，不依赖当前工作目录。
 
-1. 环境变量 `SA_CLI_DATA_DIR`
-2. 模块所在目录（`pip install -e .` 即仓库根目录）
-3. 当前工作目录
+自定义配置时，把需要使用的两个指令集 JSON 和 `cal_points.json` 放入独立目录，
+再设置环境变量（优先于包内资源）：
 
-非 editable 安装（`pip install .`）时 JSON 不在 site-packages 中，此时把 `SA_CLI_DATA_DIR` 指向存放 JSON 的目录即可：
-
-```bash
-export SA_CLI_DATA_DIR=/path/to/SA-CLI
+```powershell
+$env:SA_CLI_DATA_DIR = "C:\instrument-config"
 ```
+
+未提供 `cal_points.json` 时使用代码默认点集；指令集缺失会明确报错，不静默回退。
+校准点每次加载都会重新读取配置，支持同一进程切换目录或更新文件。
 
 ### 默认校准点（cal_points.json）
 
@@ -608,7 +631,7 @@ sa-cli 分辨力带宽转换影响 -b 30k 100k --output rbw_switch.json
 
 ## 架构说明
 
-### 仪器基类 `Instrument`（`instruments.py`）
+### 仪器基类 `Instrument`（`src/sa_cli/instruments/base.py`）
 
 从 JSON 文件加载 SCPI 指令集，通过闭包工厂 `_create_methods()` 动态生成实例方法。新增仪器指令只需编辑 JSON，无需改 Python 代码。
 
@@ -619,9 +642,9 @@ class SpectrumAnalyzer(Instrument):
         self.instr.timeout = 60000  # 频谱仪超时 60s（与 OPC 等待上限一致）
 ```
 
-信号发生器超时放宽至 15s（`instruments.py`），以覆盖频率/电平稳定等待；`visa_session` 上下文管理器在退出时（无论正常或异常）会强制发送 `rf_off`，确保测量结束后 RF 输出关闭。
+信号发生器超时放宽至 15s（`src/sa_cli/instruments/devices.py`），以覆盖频率/电平稳定等待；`visa_session` 上下文管理器在退出时（无论正常或异常）会强制发送 `rf_off`，确保测量结束后 RF 输出关闭。
 
-### 公共搜索函数 `_find_edge`（`measurements.py`）
+### 公共搜索函数 `_find_edge`（`src/sa_cli/measurements/bandwidth.py`）
 
 两阶段逼近滤波边沿（`cal_rbw` 和 `cal_bw60` 共用）：
 
@@ -642,7 +665,7 @@ class SpectrumAnalyzer(Instrument):
 
 ### 等待与同步机制（`*OPC?`）
 
-所有"等待仪器就绪"均基于 IEEE 488.2 标准通用命令 `*OPC?`（跨厂商兼容，PSA 系列与 N5183B/E8257D/E4438C 均支持），由 `measurements.py` 中三个帮助函数实现：
+所有"等待仪器就绪"均基于 IEEE 488.2 标准通用命令 `*OPC?`（跨厂商兼容，PSA 系列与 N5183B/E8257D/E4438C 均支持），由 `src/sa_cli/measurements/common.py` 中三个帮助函数实现：
 
 - **`_wait_opc(instr, min_sleep, timeout_s)`** — 先保底等待 `min_sleep`（覆盖 preset 内部校准等 `*OPC?` 未跟踪的操作），再轮询 `*OPC?` 返回 1；超时或通信失败抛出异常并停止当前校准点；单次 VISA 查询超时受剩余 OPC 预算限制，结束后恢复原 VISA 超时。
 - **`_wait_sweep(spec_an, min_sleep, timeout_s)`** — 等待频谱仪完成一次扫描：切单次扫描（`:INITiate:CONTinuous OFF`）→ 触发（`:INITiate:IMMediate`，即 `init_sweep` action）→ `*OPC?` → 恢复连续扫描。**连续扫描模式下 `*OPC?` 语义不可靠（可能立即返回或永久阻塞），必须搭配单次扫描模式使用**。
@@ -684,4 +707,36 @@ MIT
 - OPC 超时、通信失败、边沿搜索或峰值调整未收敛时，中止测量并返回非零退出码。已完成校准点仍按部分结果机制导出。
 - CSV 每行包含命令元数据、汇总字段和 `partial` 标记；`True` 表示结果不完整，`False` 表示完整结果。JSON 保留原有结构。
 - 输出扩展名和父目录在连接仪器之前检查。JSON/CSV 先写入同目录临时文件，成功后替换目标文件；写入失败保留已有文件。
-- `--dry-run` 使用模拟读数，跳过峰值收敛判定；输出不能作为实测结果。调用结束后恢复原等待函数，允许同一进程继续执行真实测量。
+- `--dry-run` 使用模拟读数，跳过峰值收敛判定；输出不能作为实测结果。每个仪器实例持有独立等待策略，不修改全局等待函数，允许同一进程交替执行 dry-run 和真实测量。
+
+
+## Python 调用与会话边界
+
+测量函数只负责测量，RF 关闭和资源释放统一由 `visa_session` 管理。直接调用
+Python API 时也应放在会话上下文中；正常退出、测量异常和第二台仪器连接失败
+都会尝试关闭信号源 RF。RF 关闭失败会记录警告，不覆盖原测量异常。
+
+```python
+from sa_cli import config
+from sa_cli.instruments import visa_session
+from sa_cli.measurements import cal_rbw
+
+with visa_session(config.sg_addr(), config.sa_addr()) as (sig, spec):
+    results = cal_rbw(spec, sig, rbw_list=[100, 1000])
+```
+
+等待策略通过 `visa_session(..., sleep=callback)` 或
+`sa_cli.cli.main.main(argv, sleep=callback)` 显式注入，默认使用真实等待；
+`dry_run=True` 始终使用不等待策略。测试可注入记录函数，实际测量保留默认值。
+
+## 构建与验证
+
+```bash
+python -m pip install -e ".[dev]"
+python -m pytest
+python -m pytest tests/integration -q
+python -m pip wheel . --no-deps -w dist
+```
+
+发布前在独立环境安装 wheel，并切换到仓库外运行
+`sa-cli rbw-switch -b 100 1000 --dry-run`，验证入口和内置 JSON 资源完整。

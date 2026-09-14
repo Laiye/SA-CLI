@@ -3,8 +3,10 @@
 """默认配置：可通过环境变量覆盖仪器地址，通过 cal_points.json 配置默认校准点。"""
 
 import json
-import math
 import os
+from importlib import resources
+
+from sa_cli.validation import validate_points
 
 CAL_POINTS_FILE = "cal_points.json"
 DATA_DIR_ENV = "SA_CLI_DATA_DIR"
@@ -37,30 +39,22 @@ DEFAULT_LOG_SCALE_10DB_POINTS = [10, 20, 30, 40, 50, 60, 70, 80]
 DEFAULT_LINEAR_SCALE_POINTS = [4, 8, 12, 16, 20]
 DEFAULT_RBW_SWITCH_LIST = [100, 300, 1e3, 3e3, 10e3, 30e3, 100e3, 300e3, 1e6]
 
-_cal_points = None
-
-
-def data_dir():
-    """JSON 指令集 / 校准点所在目录。
-
-    查找顺序：环境变量 SA_CLI_DATA_DIR → 模块所在目录（editable 安装即仓库根）→
-    当前工作目录；以目录下存在 spectrum_analyzer.json 判定为数据目录。这样
-    `pip install .`（非 editable）时也可通过 SA_CLI_DATA_DIR 或将 JSON 放在工作目录使用。
-    """
-    env_dir = os.environ.get(DATA_DIR_ENV)
-    module_dir = os.path.dirname(os.path.abspath(__file__))
-    candidates = [env_dir] if env_dir else []
-    candidates.extend([module_dir, os.getcwd()])
-    for candidate in candidates:
-        if os.path.exists(os.path.join(candidate, "spectrum_analyzer.json")):
-            return candidate
-    return env_dir or module_dir
+def open_data(filename):
+    """打开显式路径、环境变量目录或随包分发的数据；不依赖工作目录。"""
+    filename = os.fspath(filename)
+    if os.path.isabs(filename):
+        return open(filename, "r", encoding="utf-8")
+    override = os.environ.get(DATA_DIR_ENV)
+    if override:
+        return open(os.path.join(override, filename), "r", encoding="utf-8")
+    if hasattr(resources, "files"):
+        return resources.files("sa_cli.data").joinpath(filename).open("r", encoding="utf-8")
+    return resources.open_text("sa_cli.data", filename, encoding="utf-8")
 
 
 def _load_cal_points():
-    path = os.path.join(data_dir(), CAL_POINTS_FILE)
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open_data(CAL_POINTS_FILE) as f:
             data = json.load(f)
     except FileNotFoundError:
         return {}
@@ -73,10 +67,7 @@ def _load_cal_points():
 
 def cal_points():
     """读取各校准项目默认校准点（cal_points.json）。"""
-    global _cal_points
-    if _cal_points is None:
-        _cal_points = _load_cal_points()
-    return _cal_points
+    return _load_cal_points()
 
 
 def cal_point_defaults(command, fallback):
@@ -93,14 +84,3 @@ def sa_addr():
     return os.environ.get("SA_CLI_SA_ADDR", DEFAULT_SA_ADDR)
 
 
-def validate_points(points, name="校准点"):
-    """校准点必须为非空、不重复的有限正数列表。"""
-    if not isinstance(points, (list, tuple)) or not points:
-        raise ValueError(f"{name} 必须为非空数值列表")
-    for value in points:
-        if (isinstance(value, bool) or not isinstance(value, (int, float))
-                or not math.isfinite(value) or value <= 0):
-            raise ValueError(f"{name} 必须包含有限正数: {value!r}")
-    if len(set(points)) != len(points):
-        raise ValueError(f"{name} 不允许重复校准点")
-    return list(points)

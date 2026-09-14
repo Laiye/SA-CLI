@@ -1,29 +1,30 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """Instrument 基类与 JSON 指令集 schema 的单元测试。"""
+
+from sa_cli.instruments import session
 
 import json
 import os
 
 import pytest
 
-import config
-from conftest import SA_JSON, SG_JSON, build_instrument
-from instruments import Instrument, SignalGenerator, SpectrumAnalyzer, visa_session
+from sa_cli import config
+from tests.fakes import SA_JSON, SG_JSON, build_instrument
+from sa_cli.instruments import Instrument, SignalGenerator, SpectrumAnalyzer, visa_session
 
 
 # ---------- JSON 指令集路径解析 ----------
 
-def test_relative_json_resolved_from_data_dir(tmp_path, monkeypatch):
-    """相对 JSON 名称按 config.data_dir() 解析（支持 SA_CLI_DATA_DIR 覆盖）。"""
-    (tmp_path / "spectrum_analyzer.json").write_text("{}", encoding="utf-8")
+def test_relative_json_loaded_from_override(tmp_path, monkeypatch):
+    data = {"actions": {"custom": {"commands": ["CUSTOM"], "args_num": 0}}}
+    (tmp_path / "spectrum_analyzer.json").write_text(json.dumps(data), encoding="utf-8")
     monkeypatch.setenv(config.DATA_DIR_ENV, str(tmp_path))
-    resolved = Instrument._resolve_json_path("spectrum_analyzer.json")
-    assert resolved == os.path.join(str(tmp_path), "spectrum_analyzer.json")
+    instrument = Instrument("dummy", "spectrum_analyzer.json", dry_run=True)
+    assert "custom" in instrument.actions
 
 
 def test_absolute_json_path_kept_as_is():
-    assert Instrument._resolve_json_path(SA_JSON) == SA_JSON
+    instrument = Instrument("dummy", SA_JSON, dry_run=True)
+    assert "idn" in instrument.actions
 
 
 # ---------- JSON schema ----------
@@ -162,7 +163,7 @@ def test_clear_status_uses_device_clear_and_cls():
 
 
 def test_visa_session_closes_resources():
-    from conftest import FakeResourceManager, FakeVisaResource
+    from tests.fakes import FakeResourceManager, FakeVisaResource
     rm = FakeResourceManager(FakeVisaResource())
     with visa_session("dummy-sg", "dummy-sa", rm=rm) as (sig, spec):
         assert isinstance(sig, SignalGenerator)
@@ -171,7 +172,7 @@ def test_visa_session_closes_resources():
 
 
 def test_visa_session_turns_rf_off_on_exit():
-    from conftest import FakeResourceManager, FakeVisaResource
+    from tests.fakes import FakeResourceManager, FakeVisaResource
     rm = FakeResourceManager(FakeVisaResource())
     with visa_session("dummy-sg", "dummy-sa", rm=rm):
         pass
@@ -179,7 +180,7 @@ def test_visa_session_turns_rf_off_on_exit():
 
 
 def test_visa_session_rf_off_on_exception():
-    from conftest import FakeResourceManager, FakeVisaResource
+    from tests.fakes import FakeResourceManager, FakeVisaResource
     rm = FakeResourceManager(FakeVisaResource())
     with pytest.raises(RuntimeError):
         with visa_session("dummy-sg", "dummy-sa", rm=rm) as (sig, spec):
@@ -217,19 +218,20 @@ def test_dry_run_logs_scpi_commands(caplog):
 
 def test_visa_session_dry_run_skips_real_rm():
     """dry-run 会话不应创建真实 ResourceManager（传入会抛错的哨兵验证）。"""
-    from instruments import pyvisa
+    import pyvisa
 
     def _boom():
         raise AssertionError("dry-run 不应创建 ResourceManager")
 
-    import instruments as instr_mod
-    old = instr_mod.pyvisa.ResourceManager
-    instr_mod.pyvisa.ResourceManager = _boom
+    from sa_cli import instruments as instr_mod
+    old = session.pyvisa.ResourceManager
+    session.pyvisa.ResourceManager = _boom
     try:
         with visa_session("sg", "sa", dry_run=True) as (sig, spec):
             assert isinstance(sig, SignalGenerator)
             assert isinstance(spec, SpectrumAnalyzer)
             assert sig.instr is None and spec.instr is None
     finally:
-        instr_mod.pyvisa.ResourceManager = old
+        session.pyvisa.ResourceManager = old
     assert pyvisa.ResourceManager is old
+
