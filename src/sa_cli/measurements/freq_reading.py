@@ -185,10 +185,8 @@ def cal_freq_reading(spec_an, sig_gen, freq_list=None, ref_level_dbm=None,
             "relative_ppm": error / freq_hz * 1e6,
             "resolution_hz": resolution,
         }
-        logger.info("  marker 读数 %.1f Hz → 显示 %s（分辨力 %s，偏差 %s）",
-                    reading,
+        logger.info("    → 显示 %s（偏差 %s）",
                     format_freq(displayed, freq_hz, resolution),
-                    format_freq(resolution, freq_hz, resolution),
                     format_freq(error, freq_hz, resolution, signed=True))
 
     return results

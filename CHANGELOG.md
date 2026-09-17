@@ -13,6 +13,7 @@
   - 显示文本按仪器样式给出：单位按量级自动切换（可用 `--unit` 强制 Hz/kHz/MHz/GHz），小数位数由显示分辨力决定，同一行的显示值/分辨力/偏差小数位对齐（例：100 MHz 点、Span 10 MHz → 分辨力 0.01 MHz → 显示 `100.00 MHz`）
   - 导出结论：`max_abs_error_hz`（含对应频率/扫频宽度）、`max_abs_relative_ppm`、`max_error_in_resolution_units`
 - 频谱仪指令集新增 `set_sweep_points`（`:SWEep:POINts`），并新增 `DEFAULT_SWEEP_POINTS` 等默认值
+- 所有命令的「测量结果」改为等宽表格输出（新增 `cli/table.py`：数值列右对齐、中文列宽按 2 列计算），README 各命令示例同步更新
 
 ## [0.2.0] - 2026-09-17
 

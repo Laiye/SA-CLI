@@ -12,6 +12,7 @@ from sa_cli.measurements import (MeasurementError, cal_bw60, cal_freq_reading,
                                  cal_rbw_switch, cal_ssb_phase_noise,
                                  cal_sweep_width)
 from sa_cli.report import export_results, validate_output_path
+from .table import render_table
 
 logger = logging.getLogger(__name__)
 
@@ -202,9 +203,11 @@ def _cmd_rbw(sig, spec, args):
         raise MeasurementError(str(e), partial_results=_rows_rbw(e.partial_results or {})) from e
     logger.info("\n===== 验证结果 =====")
     rows = _rows_rbw(results)
-    for row in rows:
-        logger.info("  设定 %d Hz → 实测 %.1f Hz (误差 %+.1f%%)",
-                    row["rbw_hz"], row["measured_hz"], row["error_pct"])
+    logger.info("\n%s", render_table(
+        ["设定 RBW (Hz)", "实测 3dB 带宽 (Hz)", "误差 (%)"],
+        [[f"{row['rbw_hz']:g}", f"{row['measured_hz']:.1f}", f"{row['error_pct']:+.2f}"]
+         for row in rows],
+        aligns=["right", "right", "right"]))
     return rows
 
 
@@ -225,8 +228,10 @@ def _cmd_bw60(sig, spec, args):
         raise MeasurementError(str(e), partial_results=_rows_bw60(e.partial_results or {})) from e
     logger.info("\n===== 测量结果 =====")
     rows = _rows_bw60(results)
-    for row in rows:
-        logger.info("  设定 RBW=%d Hz → -60 dB 带宽: %.1f Hz", row["rbw_hz"], row["bw60_hz"])
+    logger.info("\n%s", render_table(
+        ["设定 RBW (Hz)", "-60 dB 带宽 (Hz)"],
+        [[f"{row['rbw_hz']:g}", f"{row['bw60_hz']:.1f}"] for row in rows],
+        aligns=["right", "right"]))
     return rows
 
 
@@ -267,9 +272,11 @@ def _cmd_rbw_switch(sig, spec, args):
 
     logger.info("\n===== 测量结果 =====")
     rows = _rows_rbw_switch(results, args.span_ratio)
-    for row in rows:
-        logger.info("  RBW %s Hz（Span %.0f Hz）→ 标记增量峰值 %+.3f dB",
-                    row["rbw_hz"], row["span_hz"], row["delta_db"])
+    logger.info("\n%s", render_table(
+        ["RBW (Hz)", "Span (Hz)", "标记增量峰值 (dB)"],
+        [[f"{row['rbw_hz']:g}", f"{row['span_hz']:.0f}", f"{row['delta_db']:+.3f}"]
+         for row in rows],
+        aligns=["right", "right", "right"]))
     summary = _summarize_rbw_switch(rows)
     if summary:
         logger.info("  分辨力带宽转换影响（max|Δ|）: %.3f dB @ RBW=%s Hz",
@@ -311,10 +318,11 @@ def _cmd_freq_reading(sig, spec, args):
 
     logger.info("\n===== 测量结果 =====")
     rows = _rows_freq_reading(results, unit)
-    for row in rows:
-        logger.info("  %s / Span %s → marker 显示 %s（分辨力 %s，偏差 %s）",
-                    row["freq_text"], row["span_text"], row["displayed_text"],
-                    row["resolution_text"], row["error_text"])
+    logger.info("\n%s", render_table(
+        ["频率", "Span", "marker 显示", "显示分辨力", "偏差"],
+        [[row["freq_text"], row["span_text"], row["displayed_text"],
+          row["resolution_text"], row["error_text"]] for row in rows],
+        aligns=["right", "right", "right", "right", "right"]))
     summary = _summarize_freq_reading(rows)
     if summary:
         logger.info("  最大显示偏差: %s @ %s（Span %s），占分辨力 %.2f 倍",
@@ -364,9 +372,11 @@ def _cmd_phase_noise(sig, spec, args):
         })
 
     logger.info("\n===== 测量结果 =====")
-    for row in rows:
-        logger.info("  频偏 %d Hz → 相位噪声: %.2f dBc/Hz",
-                    row["offset_hz"], row["phase_noise_dbc_hz"])
+    logger.info("\n%s", render_table(
+        ["频偏 (Hz)", "RBW (Hz)", "相位噪声 (dBc/Hz)"],
+        [[f"{row['offset_hz']:g}", f"{row['rbw_hz']:.1f}", f"{row['phase_noise_dbc_hz']:.2f}"]
+         for row in rows],
+        aligns=["right", "right", "right"]))
     return rows
 
 
@@ -409,10 +419,11 @@ def _cmd_sweep_width(sig, spec, args):
         })
 
     logger.info("\n===== 测量结果 =====")
-    for row in rows:
-        logger.info("  设定 span=%d Hz → 频率差 %.2f Hz (误差 %+.2f%%)，被校扫频宽度 %.2f Hz",
-                    row["span_hz"], row["freq_diff_hz"],
-                    100 * row["delta"], row["corrected_width_hz"])
+    logger.info("\n%s", render_table(
+        ["设定 span (Hz)", "频率差 (Hz)", "相对误差 (%)", "被校扫频宽度 (Hz)"],
+        [[f"{row['span_hz']:.0f}", f"{row['freq_diff_hz']:.2f}",
+          f"{100 * row['delta']:+.2f}", f"{row['corrected_width_hz']:.2f}"] for row in rows],
+        aligns=["right", "right", "right", "right"]))
     return rows
 
 
@@ -449,9 +460,11 @@ def _cmd_log_scale(sig, spec, args):
 
     logger.info("\n===== 测量结果 =====")
     rows = _rows_log(result["results"])
-    for row in rows:
-        logger.info("  衰减 %d dB → marker delta %.3f dB（偏差 %+.3f dB）",
-                    row["atten_db"], row["marker_delta_db"], row["error_db"])
+    logger.info("\n%s", render_table(
+        ["衰减 (dB)", "marker delta (dB)", "偏差 (dB)"],
+        [[f"{row['atten_db']:g}", f"{row['marker_delta_db']:+.3f}", f"{row['error_db']:+.3f}"]
+         for row in rows],
+        aligns=["right", "right", "right"]))
     return rows
 
 
@@ -487,10 +500,11 @@ def _cmd_linear_scale(sig, spec, args):
 
     logger.info("\n===== 测量结果 =====")
     rows = _rows_linear(result["results"])
-    for row in rows:
-        logger.info("  衰减 %d dB → Vm %.3f mV / 理论 %.3f mV（相对误差 %+.3f%%）",
-                    row["atten_db"], row["measured_mv"], row["theoretical_mv"],
-                    row["relative_error_pct"])
+    logger.info("\n%s", render_table(
+        ["衰减 (dB)", "Vm (mV)", "理论 Vn (mV)", "相对误差 (%)"],
+        [[f"{row['atten_db']:g}", f"{row['measured_mv']:.3f}", f"{row['theoretical_mv']:.3f}",
+          f"{row['relative_error_pct']:+.3f}"] for row in rows],
+        aligns=["right", "right", "right", "right"]))
     return rows
 
 

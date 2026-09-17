@@ -562,3 +562,35 @@ def test_main_freq_reading_dry_run_prints_span_rules(monkeypatch, caplog):
     for span in ("10000.0", "100000.0", "1000000.0", "10000000.0", "100000000.0"):
         assert f":FREQuency:SPAN {span}" in text
     assert ":SWEep:POINts 1001" in text
+
+
+# ---------- 结果表格 ----------
+
+def test_main_freq_reading_prints_results_table(monkeypatch, caplog):
+    """结果区以表格输出：表头、分隔线与显示样式数值。"""
+    import logging
+
+    from sa_cli.cli import main, parser, commands
+    _patch_rm(monkeypatch)
+    with caplog.at_level(logging.INFO):
+        assert main.main(["freq-reading", "-f", "100e6"]) == 0
+    text = caplog.text
+    assert "频率" in text and "Span" in text
+    assert "marker 显示" in text and "显示分辨力" in text and "偏差" in text
+    assert "|-----" in text                       # 表格分隔线
+    assert "100.00 MHz" in text and "0.01 MHz" in text
+
+
+def test_main_rbw_prints_results_table(monkeypatch, caplog):
+    """其它命令的结果区同样改为表格。"""
+    import logging
+
+    from sa_cli.cli import main, parser, commands
+    _patch_rm(monkeypatch)
+    with caplog.at_level(logging.INFO):
+        assert main.main(["rbw", "-b", "100", "1000"]) == 0
+    text = caplog.text
+    assert "设定 RBW (Hz)" in text
+    assert "实测 3dB 带宽 (Hz)" in text
+    assert "误差 (%)" in text
+    assert "|-----" in text
