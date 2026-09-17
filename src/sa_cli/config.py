@@ -29,6 +29,15 @@ DEFAULT_SPAN_RATIO = 10.0          # 扫频宽度 / RBW 比率（6.12.3 规定 5
 DEFAULT_RBW_SWITCH_REF_LEVEL = -15  # 参考电平 (dBm)
 DEFAULT_RBW_SWITCH_SG_POWER = -20   # 信号源电平 (dBm)
 
+# 频率读数（以频谱仪 marker 显示值为准）默认参数
+DEFAULT_FREQ_READING_REF_LEVEL = 0   # 参考电平 (dBm)
+DEFAULT_FREQ_READING_SG_POWER = -1   # 信号源输出电平 (dBm)
+DEFAULT_SWEEP_POINTS = 1001          # 采样点数 Points（显示分辨力 = span/(Points-1)）
+# 各频率点对应的三个扫频宽度 (Hz)
+FREQ_READING_SPANS_LOW = [10e3, 100e3, 1e6]    # 1 MHz 点：0.01 / 0.1 / 1 MHz
+FREQ_READING_SPANS_MID = [100e3, 1e6, 10e6]    # 10 MHz 点：0.1 / 1 / 10 MHz
+FREQ_READING_SPANS_HIGH = [1e6, 10e6, 100e6]   # ≥100 MHz 点：1 / 10 / 100 MHz
+
 # 各校准项目的默认校准点（代码兜底，cal_points.json 优先）
 DEFAULT_PHASE_NOISE_OFFSETS = [100, 1000, 10e3, 100e3]
 DEFAULT_RBW_LIST = [100, 1000, 3000, 10e3, 30e3, 100e3, 300e3, 1e6]
@@ -38,6 +47,7 @@ DEFAULT_LOG_SCALE_1DB_POINTS = [1, 2, 3, 4, 5, 6, 7, 8, 9]
 DEFAULT_LOG_SCALE_10DB_POINTS = [10, 20, 30, 40, 50, 60, 70, 80]
 DEFAULT_LINEAR_SCALE_POINTS = [4, 8, 12, 16, 20]
 DEFAULT_RBW_SWITCH_LIST = [100, 300, 1e3, 3e3, 10e3, 30e3, 100e3, 300e3, 1e6]
+DEFAULT_FREQ_READING_FREQS = [1e6, 10e6, 100e6, 1000e6, 10000e6, 26500e6]
 
 def open_data(filename):
     """打开显式路径、环境变量目录或随包分发的数据；不依赖工作目录。"""

@@ -21,6 +21,9 @@ def test_cal_point_defaults_from_config():
     assert config.cal_point_defaults("rbw-switch", []) == [
         100, 300, 1000, 3000, 10000, 30000, 100000, 300000, 1000000,
     ]
+    assert config.cal_point_defaults("freq-reading", []) == [
+        1000000, 10000000, 100000000, 1000000000, 10000000000, 26500000000,
+    ]
 
 
 def test_cal_point_defaults_fallback_for_unknown_command():

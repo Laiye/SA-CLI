@@ -6,9 +6,10 @@ from sa_cli.validation import validate_points
 from sa_cli import config
 from sa_cli.measurements.common import PointProgress
 from sa_cli.instruments import visa_session
-from sa_cli.measurements import (MeasurementError, cal_bw60, cal_linear_scale,
-                                 cal_log_scale, cal_rbw, cal_rbw_switch,
-                                 cal_ssb_phase_noise, cal_sweep_width)
+from sa_cli.measurements import (MeasurementError, cal_bw60, cal_freq_reading,
+                                 cal_linear_scale, cal_log_scale, cal_rbw,
+                                 cal_rbw_switch, cal_ssb_phase_noise,
+                                 cal_sweep_width)
 from sa_cli.report import export_results, validate_output_path
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,34 @@ def _summarize_rbw_switch(rows):
     }
 
 
+def _rows_freq_reading(results):
+    """原始结果 {(freq, span): {...}} → 导出行（显示值与指令读数并列）。"""
+    return [
+        {"freq_hz": freq, "span_hz": span,
+         "reading_hz": vals["reading_hz"], "displayed_hz": vals["displayed_hz"],
+         "error_hz": vals["error_hz"], "raw_error_hz": vals["raw_error_hz"],
+         "relative_ppm": round(vals["relative_ppm"], 3),
+         "resolution_hz": vals["resolution_hz"]}
+        for (freq, span), vals in results.items()
+    ]
+
+
+def _summarize_freq_reading(rows):
+    """结论字段：最大显示偏差（Hz）及其频率/扫频宽度、最大相对偏差与占分辨力的倍数。"""
+    if not rows:
+        return {}
+    worst = max(rows, key=lambda r: abs(r["error_hz"]))
+    worst_ppm = max(rows, key=lambda r: abs(r["relative_ppm"]))
+    return {
+        "max_abs_error_hz": worst["error_hz"],
+        "max_abs_error_at_freq_hz": worst["freq_hz"],
+        "max_abs_error_at_span_hz": worst["span_hz"],
+        "max_abs_relative_ppm": round(worst_ppm["relative_ppm"], 3),
+        "max_error_in_resolution_units": round(
+            abs(worst["error_hz"]) / worst["resolution_hz"], 3) if worst["resolution_hz"] else None,
+    }
+
+
 def _dispatch(args, *, sleep=None):
     """会话管理 + 统一导出/部分结果导出的执行骨架。"""
     canonical = _ALIAS_TO_CANONICAL.get(args.command, args.command)
@@ -102,7 +131,7 @@ def _dispatch(args, *, sleep=None):
         fallback = (config.DEFAULT_LOG_SCALE_1DB_POINTS if args.scale == 1
                     else config.DEFAULT_LOG_SCALE_10DB_POINTS) if canonical == "log-scale" else config.DEFAULT_LINEAR_SCALE_POINTS
         args.points = config.cal_point_defaults(key, fallback)
-    for name in ("offset", "rbw_list", "span", "points"):
+    for name in ("offset", "rbw_list", "span", "points", "freq_list"):
         points = getattr(args, name, None)
         if isinstance(points, list):
             validate_points(points, name)
@@ -226,6 +255,51 @@ def _cmd_rbw_switch(sig, spec, args):
     if summary:
         logger.info("  分辨力带宽转换影响（max|Δ|）: %.3f dB @ RBW=%s Hz",
                     summary["max_abs_delta_db"], summary["max_abs_delta_at_rbw_hz"])
+    return rows
+
+
+@_register_command("freq-reading", aliases=("freq", "频率读数"),
+                   export_meta=lambda args: {
+                       "command": "freq-reading",
+                       "freq_list": args.freq_list,
+                       "ref_level_dbm": args.ref_level,
+                       "sg_power_dbm": args.sg_power,
+                       "points_count": args.points_count,
+                   },
+                   summarize=_summarize_freq_reading)
+def _cmd_freq_reading(sig, spec, args):
+    logger.info("\n===== 频率读数准确性验证 =====")
+    logger.info("  校准频率点:   %s Hz", args.freq_list)
+    logger.info("  参考电平:     %s dBm，信号源电平 %s dBm", args.ref_level, args.sg_power)
+    logger.info("  采样点数:     %d（显示分辨力 = span/(Points-1)）", args.points_count)
+    logger.info("  扫频宽度规则: 1 MHz→10k/100k/1M；10 MHz→100k/1M/10M；≥100 MHz→1M/10M/100M")
+    logger.info("")
+    try:
+        results = cal_freq_reading(
+            spec, sig,
+            freq_list=args.freq_list,
+            ref_level_dbm=args.ref_level,
+            sg_power_dbm=args.sg_power,
+            points_count=args.points_count,
+            settle_s=args.settle,
+        )
+    except MeasurementError as e:
+        raise MeasurementError(
+            str(e), partial_results=_rows_freq_reading(e.partial_results or {})) from e
+
+    logger.info("\n===== 测量结果 =====")
+    rows = _rows_freq_reading(results)
+    for row in rows:
+        logger.info("  %.6g MHz / Span %.6g MHz → marker 显示 %.1f Hz（分辨力 %.1f Hz，偏差 %+.1f Hz）",
+                    row["freq_hz"] / 1e6, row["span_hz"] / 1e6,
+                    row["displayed_hz"], row["resolution_hz"], row["error_hz"])
+    summary = _summarize_freq_reading(rows)
+    if summary:
+        logger.info("  最大显示偏差: %+.1f Hz @ %.6g MHz（Span %.6g MHz），占分辨力 %.2f 倍",
+                    summary["max_abs_error_hz"], summary["max_abs_error_at_freq_hz"] / 1e6,
+                    summary["max_abs_error_at_span_hz"] / 1e6,
+                    summary["max_error_in_resolution_units"])
+        logger.info("  最大相对偏差: %+.3f ppm", summary["max_abs_relative_ppm"])
     return rows
 
 

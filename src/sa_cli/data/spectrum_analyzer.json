@@ -116,6 +116,10 @@
       "args_num": 0,
       "is_query": true
     },
+    "set_sweep_points": {
+      "commands": [":SWEep:POINts "],
+      "args_num": 1
+    },
     "opc": {
       "commands": ["*OPC?"],
       "args_num": 0,

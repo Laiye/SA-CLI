@@ -1,6 +1,6 @@
 """测量算法的单元测试：使用模拟滤波器形状驱动 _find_edge 收敛。"""
 
-from sa_cli.measurements import common, bandwidth
+from sa_cli.measurements import common, bandwidth, freq_reading
 
 import math
 
@@ -11,7 +11,7 @@ from sa_cli import measurements
 from tests.fakes import FakeResourceManager, FakeVisaResource
 from sa_cli.instruments import Instrument
 from sa_cli.measurements.bandwidth import _find_edge
-from sa_cli.measurements import (MeasurementError, cal_bw60,
+from sa_cli.measurements import (MeasurementError, cal_bw60, cal_freq_reading,
                           cal_linear_scale, cal_log_scale, cal_rbw,
                           cal_rbw_switch, cal_ssb_phase_noise, cal_sweep_width)
 
@@ -637,3 +637,113 @@ def test_cal_rbw_switch_carries_partial_results_on_failure():
     with pytest.raises(MeasurementError) as ei:
         cal_rbw_switch(sa, sg, rbw_list=[100, 1000])
     assert set(ei.value.partial_results.keys()) == {100}
+
+
+# ---------- 频率读数 ----------
+
+class FreqReadingSA(FakeVisaResource):
+    """marker X 返回（中心频率 + 偏差）；记录 center / span / points。"""
+
+    def __init__(self, offset=0.0, fail_on=None):
+        super().__init__()
+        self.offset = offset
+        self.fail_on = fail_on          # (freq, span)：该组合上 marker 读取抛错
+        self.center = None
+        self.span = None
+        self.points = None
+        self.spans = []
+        self.centers = []
+
+    def write(self, command):
+        if command.startswith(":FREQuency:CENTer "):
+            self.center = float(command.split()[-1])
+            self.centers.append(self.center)
+        elif command.startswith(":FREQuency:SPAN "):
+            self.span = float(command.split()[-1])
+            self.spans.append(self.span)
+        elif command.startswith(":SWEep:POINts "):
+            self.points = int(float(command.split()[-1]))
+        super().write(command)
+
+    def query(self, command):
+        if command == ":CALCulate:MARKer1:X?":
+            if self.fail_on is not None and (self.center, self.span) == self.fail_on:
+                raise OSError("simulated marker read failure")
+            return str(self.center + self.offset)
+        return super().query(command)
+
+
+def make_freq_reading_pair(offset=0.0, fail_on=None):
+    sa_res = FreqReadingSA(offset=offset, fail_on=fail_on)
+    sg_res = FakeVisaResource()
+    sa = Instrument("sa", "spectrum_analyzer.json", rm=FakeResourceManager(sa_res))
+    sg = Instrument("sg", "signal_generator.json", rm=FakeResourceManager(sg_res))
+    return sg, sa, sa_res
+
+
+def test_freq_reading_span_rules():
+    """1 MHz 点 10k/100k/1M；10 MHz 点 100k/1M/10M；≥100 MHz 点 1M/10M/100M。"""
+    assert freq_reading.spans_for(1e6) == [10e3, 100e3, 1e6]
+    assert freq_reading.spans_for(10e6) == [100e3, 1e6, 10e6]
+    assert freq_reading.spans_for(100e6) == [1e6, 10e6, 100e6]
+    assert freq_reading.spans_for(1000e6) == [1e6, 10e6, 100e6]
+    assert freq_reading.spans_for(26500e6) == [1e6, 10e6, 100e6]
+
+
+def test_freq_reading_display_resolution_and_quantization():
+    """显示分辨力 = span/(Points-1)；读数按该分辨力量化后才作为显示值。"""
+    offset, points = 3.0, 1001
+    sg, sa, sa_res = make_freq_reading_pair(offset=offset)
+    results = cal_freq_reading(sa, sg, freq_list=[1e6], points_count=points)
+    row = results[(1e6, 10e3)]
+    assert row["resolution_hz"] == pytest.approx(10e3 / 1000)
+    assert row["reading_hz"] == pytest.approx(1e6 + offset)
+    # 偏移 3 Hz < 半个分辨力（5 Hz）→ 显示值吸附到中心栅格点
+    assert row["displayed_hz"] == pytest.approx(1e6)
+    assert row["error_hz"] == pytest.approx(0.0)
+    assert row["raw_error_hz"] == pytest.approx(offset)
+
+
+def test_freq_reading_error_follows_display_value():
+    """偏移超过半个分辨力时应显示为相邻栅格点（偏差 = 一个分辨力）。"""
+    sg, sa, sa_res = make_freq_reading_pair(offset=6.0)
+    results = cal_freq_reading(sa, sg, freq_list=[1e6], points_count=1001)
+    row = results[(1e6, 10e3)]
+    assert row["displayed_hz"] == pytest.approx(1e6 + 10)
+    assert row["error_hz"] == pytest.approx(10.0)
+    assert row["relative_ppm"] == pytest.approx(10.0 / 1e6 * 1e6)
+
+
+def test_freq_reading_configures_instruments():
+    """参考电平 0 dBm、信号源 -1 dBm、采样点数、marker 普通模式、逐点设置 center/span。"""
+    sg, sa, sa_res = make_freq_reading_pair()
+    sg_res = sg.instr
+    cal_freq_reading(sa, sg, freq_list=[1e6, 100e6], points_count=1001)
+    assert any(w.startswith(":DISPlay:WINDow:TRACe:Y:RLEVel") for w in sa_res.writes)
+    assert ":POWer:AMPLitude -1" in sg_res.writes
+    assert sa_res.writes.count(":SWEep:POINts 1001") == 6      # 2 个频率点 × 3 个扫频宽度
+    assert sa_res.writes.count(":CALCulate:MARKer1:MODE POS") == 1
+    assert sa_res.centers == [1e6, 1e6, 1e6, 100e6, 100e6, 100e6]
+
+
+def test_freq_reading_default_freq_list_and_plan_size():
+    sg, sa, sa_res = make_freq_reading_pair()
+    results = cal_freq_reading(sa, sg)
+    assert len(results) == len(config.DEFAULT_FREQ_READING_FREQS) * 3
+    assert (1e6, 10e3) in results and (26500e6, 100e6) in results
+
+
+def test_freq_reading_rejects_bad_points_count():
+    sg, sa, sa_res = make_freq_reading_pair()
+    with pytest.raises(ValueError, match="采样点数"):
+        cal_freq_reading(sa, sg, freq_list=[1e6], points_count=1)
+
+
+def test_freq_reading_carries_partial_results_on_failure():
+    sa_res = FreqReadingSA(fail_on=(1e6, 100e3))
+    sg_res = FakeVisaResource()
+    sa = Instrument("sa", "spectrum_analyzer.json", rm=FakeResourceManager(sa_res))
+    sg = Instrument("sg", "signal_generator.json", rm=FakeResourceManager(sg_res))
+    with pytest.raises(MeasurementError) as ei:
+        cal_freq_reading(sa, sg, freq_list=[1e6], points_count=1001)
+    assert set(ei.value.partial_results.keys()) == {(1e6, 10e3)}

@@ -473,3 +473,64 @@ def test_parser_si_suffix_respects_constraints():
         _parse("rbw", "-c", "100m")                                # 小写 m 有歧义
     with pytest.raises(SystemExit):
         _parse("rbw", "-b", "30x")                                 # 非法后缀
+
+
+# ---------- 频率读数 ----------
+
+def test_main_freq_reading_end_to_end(monkeypatch, tmp_path):
+    from sa_cli.cli import main, parser, commands
+    _patch_rm(monkeypatch)
+    out = tmp_path / "fr.json"
+    rc = main.main(["freq-reading", "-f", "1e6", "--output", str(out)])
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["command"] == "freq-reading"
+    assert data["points_count"] == 1001
+    assert data["ref_level_dbm"] == 0
+    assert data["sg_power_dbm"] == -1
+    assert [row["span_hz"] for row in data["results"]] == [10000.0, 100000.0, 1000000.0]
+    for row in data["results"]:
+        assert row["resolution_hz"] == pytest.approx(row["span_hz"] / 1000)
+        assert "raw_error_hz" in row and "displayed_hz" in row
+    assert "max_abs_error_hz" in data and "max_abs_relative_ppm" in data
+
+
+def test_main_freq_reading_aliases(monkeypatch):
+    from sa_cli.cli import main, parser, commands
+    _patch_rm(monkeypatch)
+    assert main.main(["频率读数", "-f", "1e6"]) == 0
+    assert main.main(["freq", "-f", "1e6"]) == 0
+
+
+def test_parser_freq_reading_defaults():
+    args = _parse("freq-reading")
+    assert args.freq_list == [1e6, 10e6, 100e6, 1000e6, 10000e6, 26500e6]
+    assert args.points_count == 1001
+    assert args.ref_level == 0
+    assert args.sg_power == -1
+
+
+def test_parser_freq_reading_rejects_bad_points_count():
+    with pytest.raises(SystemExit):
+        _parse("freq-reading", "--points-count", "1")
+    with pytest.raises(SystemExit):
+        _parse("freq-reading", "--points-count", "abc")
+
+
+def test_main_freq_reading_dry_run_prints_span_rules(monkeypatch, caplog):
+    """dry-run 输出各频率点的三档扫频宽度与采样点数设置。"""
+    import logging
+
+    from sa_cli.cli import main, parser, commands
+    monkeypatch.setattr(
+        session.pyvisa, "ResourceManager",
+        lambda: (_ for _ in ()).throw(AssertionError("dry-run 不应创建 ResourceManager")))
+    with caplog.at_level(logging.INFO):
+        rc = main.main(["freq-reading", "-f", "1e6", "100e6", "--dry-run"])
+    assert rc == 0
+    text = caplog.text
+    assert ":FREQuency:CENTer 1000000.0" in text
+    assert ":FREQuency:CENTer 100000000.0" in text
+    for span in ("10000.0", "100000.0", "1000000.0", "10000000.0", "100000000.0"):
+        assert f":FREQuency:SPAN {span}" in text
+    assert ":SWEep:POINts 1001" in text

@@ -53,6 +53,20 @@ def _any_float(text):
     return _parse_number(text)
 
 
+def _int_at_least(minimum, label):
+    """argparse type 工厂：不小于 minimum 的整数（如采样点数 ≥ 2）。"""
+    def _convert(text):
+        try:
+            value = int(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{label}必须为整数: {text!r}") from None
+        if value < minimum:
+            raise argparse.ArgumentTypeError(f"{label}不能小于 {minimum}: {text!r}")
+        return value
+
+    return _convert
+
+
 def _add_instrument_args(parser):
     parser.add_argument(
         "--sg-addr", type=str, default=config.sg_addr(),
@@ -191,6 +205,35 @@ def build_parser():
     )
     _add_instrument_args(rsw)
     _add_output_arg(rsw)
+
+    # ---------- 频率读数 ----------
+    fr = subparsers.add_parser(
+        "freq-reading", aliases=["freq", "频率读数"], parents=[common],
+        help="频率读数准确性验证（marker 显示值为准）",
+    )
+    fr.add_argument(
+        "--freq-list", "-f", type=_positive_float, nargs="+",
+        default=config.cal_point_defaults("freq-reading", config.DEFAULT_FREQ_READING_FREQS),
+        help="校准频率点列表 (Hz)，默认 1M 10M 100M 1000M 10000M 26500M；默认读取 cal_points.json",
+    )
+    fr.add_argument(
+        "--ref-level", "-r", type=_any_float, default=config.DEFAULT_FREQ_READING_REF_LEVEL,
+        help="参考电平 (dBm)，默认 0",
+    )
+    fr.add_argument(
+        "--sg-power", type=_any_float, default=config.DEFAULT_FREQ_READING_SG_POWER,
+        help="信号源输出电平 (dBm)，默认 -1",
+    )
+    fr.add_argument(
+        "--points-count", type=_int_at_least(2, "采样点数"), default=config.DEFAULT_SWEEP_POINTS,
+        help="频谱仪采样点数 Points，默认 1001（显示分辨力 = span/(Points-1)）",
+    )
+    fr.add_argument(
+        "--settle", type=_nonneg_float, default=0.5,
+        help="每个扫频点扫描完成后的稳定等待下限 (s)，默认 0.5",
+    )
+    _add_instrument_args(fr)
+    _add_output_arg(fr)
 
     # ---------- 扫频宽度 ----------
     sw = subparsers.add_parser(
