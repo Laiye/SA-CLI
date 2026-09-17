@@ -5,6 +5,7 @@ from sa_cli.validation import validate_points
 
 from sa_cli import config
 from sa_cli.measurements.common import PointProgress
+from sa_cli.measurements.freq_reading import format_freq
 from sa_cli.instruments import visa_session
 from sa_cli.measurements import (MeasurementError, cal_bw60, cal_freq_reading,
                                  cal_linear_scale, cal_log_scale, cal_rbw,
@@ -93,28 +94,46 @@ def _summarize_rbw_switch(rows):
     }
 
 
-def _rows_freq_reading(results):
-    """原始结果 {(freq, span): {...}} → 导出行（显示值与指令读数并列）。"""
-    return [
-        {"freq_hz": freq, "span_hz": span,
-         "reading_hz": vals["reading_hz"], "displayed_hz": vals["displayed_hz"],
-         "error_hz": vals["error_hz"], "raw_error_hz": vals["raw_error_hz"],
-         "relative_ppm": round(vals["relative_ppm"], 3),
-         "resolution_hz": vals["resolution_hz"]}
-        for (freq, span), vals in results.items()
-    ]
+def _rows_freq_reading(results, unit=None):
+    """原始结果 {(freq, span): {...}} → 导出行（数值字段 + 仪器显示样式文本）。
+
+    文本的单位按标称频率量级选择（unit 可强制）、小数位由显示分辨力决定，例如
+    100 MHz 点、分辨力 0.01 MHz → “100.00 MHz”。
+    """
+    rows = []
+    for (freq, span), vals in results.items():
+        resolution = vals["resolution_hz"]
+        rows.append({
+            "freq_hz": freq,
+            "freq_text": format_freq(freq, freq, resolution, unit=unit),
+            "span_hz": span,
+            "span_text": format_freq(span, freq, resolution, unit=unit),
+            "reading_hz": vals["reading_hz"],
+            "displayed_hz": vals["displayed_hz"],
+            "displayed_text": format_freq(vals["displayed_hz"], freq, resolution, unit=unit),
+            "error_hz": vals["error_hz"],
+            "error_text": format_freq(vals["error_hz"], freq, resolution, signed=True, unit=unit),
+            "raw_error_hz": vals["raw_error_hz"],
+            "relative_ppm": round(vals["relative_ppm"], 3),
+            "resolution_hz": resolution,
+            "resolution_text": format_freq(resolution, freq, resolution, unit=unit),
+        })
+    return rows
 
 
 def _summarize_freq_reading(rows):
-    """结论字段：最大显示偏差（Hz）及其频率/扫频宽度、最大相对偏差与占分辨力的倍数。"""
+    """结论字段：最大显示偏差（含对应频率/扫频宽度）、最大相对偏差与占分辨力倍数。"""
     if not rows:
         return {}
     worst = max(rows, key=lambda r: abs(r["error_hz"]))
     worst_ppm = max(rows, key=lambda r: abs(r["relative_ppm"]))
     return {
         "max_abs_error_hz": worst["error_hz"],
+        "max_abs_error_text": worst["error_text"],
         "max_abs_error_at_freq_hz": worst["freq_hz"],
+        "max_abs_error_at_freq_text": worst["freq_text"],
         "max_abs_error_at_span_hz": worst["span_hz"],
+        "max_abs_error_at_span_text": worst["span_text"],
         "max_abs_relative_ppm": round(worst_ppm["relative_ppm"], 3),
         "max_error_in_resolution_units": round(
             abs(worst["error_hz"]) / worst["resolution_hz"], 3) if worst["resolution_hz"] else None,
@@ -265,13 +284,16 @@ def _cmd_rbw_switch(sig, spec, args):
                        "ref_level_dbm": args.ref_level,
                        "sg_power_dbm": args.sg_power,
                        "points_count": args.points_count,
+                       "unit": args.unit,
                    },
                    summarize=_summarize_freq_reading)
 def _cmd_freq_reading(sig, spec, args):
+    unit = None if args.unit == "auto" else args.unit
     logger.info("\n===== 频率读数准确性验证 =====")
     logger.info("  校准频率点:   %s Hz", args.freq_list)
     logger.info("  参考电平:     %s dBm，信号源电平 %s dBm", args.ref_level, args.sg_power)
     logger.info("  采样点数:     %d（显示分辨力 = span/(Points-1)）", args.points_count)
+    logger.info("  显示单位:     %s", "自动（按量级切换）" if unit is None else unit)
     logger.info("  扫频宽度规则: 1 MHz→10k/100k/1M；10 MHz→100k/1M/10M；≥100 MHz→1M/10M/100M")
     logger.info("")
     try:
@@ -285,19 +307,19 @@ def _cmd_freq_reading(sig, spec, args):
         )
     except MeasurementError as e:
         raise MeasurementError(
-            str(e), partial_results=_rows_freq_reading(e.partial_results or {})) from e
+            str(e), partial_results=_rows_freq_reading(e.partial_results or {}, unit)) from e
 
     logger.info("\n===== 测量结果 =====")
-    rows = _rows_freq_reading(results)
+    rows = _rows_freq_reading(results, unit)
     for row in rows:
-        logger.info("  %.6g MHz / Span %.6g MHz → marker 显示 %.1f Hz（分辨力 %.1f Hz，偏差 %+.1f Hz）",
-                    row["freq_hz"] / 1e6, row["span_hz"] / 1e6,
-                    row["displayed_hz"], row["resolution_hz"], row["error_hz"])
+        logger.info("  %s / Span %s → marker 显示 %s（分辨力 %s，偏差 %s）",
+                    row["freq_text"], row["span_text"], row["displayed_text"],
+                    row["resolution_text"], row["error_text"])
     summary = _summarize_freq_reading(rows)
     if summary:
-        logger.info("  最大显示偏差: %+.1f Hz @ %.6g MHz（Span %.6g MHz），占分辨力 %.2f 倍",
-                    summary["max_abs_error_hz"], summary["max_abs_error_at_freq_hz"] / 1e6,
-                    summary["max_abs_error_at_span_hz"] / 1e6,
+        logger.info("  最大显示偏差: %s @ %s（Span %s），占分辨力 %.2f 倍",
+                    summary["max_abs_error_text"], summary["max_abs_error_at_freq_text"],
+                    summary["max_abs_error_at_span_text"],
                     summary["max_error_in_resolution_units"])
         logger.info("  最大相对偏差: %+.3f ppm", summary["max_abs_relative_ppm"])
     return rows

@@ -747,3 +747,31 @@ def test_freq_reading_carries_partial_results_on_failure():
     with pytest.raises(MeasurementError) as ei:
         cal_freq_reading(sa, sg, freq_list=[1e6], points_count=1001)
     assert set(ei.value.partial_results.keys()) == {(1e6, 10e3)}
+
+
+def test_freq_reading_display_text_follows_resolution():
+    """100 MHz 点 / Span 10 MHz / 1001 点 → 分辨力 0.01 MHz，显示 “100.00 MHz”。"""
+    resolution = freq_reading.display_resolution(10e6, 1001)
+    assert resolution == pytest.approx(10e3)
+    assert freq_reading.format_freq(100e6, 100e6, resolution) == "100.00 MHz"
+    assert freq_reading.format_freq(resolution, 100e6, resolution) == "0.01 MHz"
+    assert freq_reading.format_freq(-resolution, 100e6, resolution, signed=True) == "-0.01 MHz"
+    assert freq_reading.format_freq(resolution, 100e6, resolution, signed=True) == "+0.01 MHz"
+
+
+def test_freq_reading_display_decimals_cases():
+    """小数位取“让分辨力正好落在小数位上”的最小位数。"""
+    assert freq_reading.display_decimals(0.01e6, 1e6) == 2
+    assert freq_reading.display_decimals(0.03e6, 1e6) == 2
+    assert freq_reading.display_decimals(0.25e6, 1e6) == 2
+    assert freq_reading.display_decimals(0.1e6, 1e6) == 1
+    assert freq_reading.display_decimals(1e6, 1e6) == 0
+    assert freq_reading.display_decimals(10e6, 1e6) == 0
+
+
+def test_freq_reading_display_unit_auto_and_forced():
+    """默认按量级自动切换单位，也可强制 MHz 以与记录表一致。"""
+    resolution = freq_reading.display_resolution(100e6, 1001)   # 0.1 MHz
+    assert freq_reading.format_freq(1000e6, 1000e6, resolution) == "1.0000 GHz"
+    assert freq_reading.format_freq(1000e6, 1000e6, resolution, unit="MHz") == "1000.0 MHz"
+    assert freq_reading.format_freq(1e6, 1e6, 10.0) == "1.00000 MHz"   # 分辨力 10 Hz

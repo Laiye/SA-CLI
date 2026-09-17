@@ -661,18 +661,29 @@ sa-cli 分辨力带宽转换影响 -b 30k 100k --output rbw_switch.json
 
 共 6 × 3 = 18 个测量点。
 
-**显示分辨力与读数口径（第 5 步）**：指令读数的分辨力与频谱仪显示不一致，因此以显示为准——显示分辨力 `= span/(Points-1)`（1001 点即 `span/1000`，例如 span 10 kHz → 10 Hz），marker 显示值只能落在显示栅格上（栅格原点为扫频起点 `中心频率 − span/2`）。程序把指令读数按该分辨力量化到栅格后作为显示值参与结论，同时保留指令原始读数与偏差，两者都在导出中：
+**显示分辨力与读数口径（第 5 步）**：指令读数的分辨力与频谱仪显示不一致，因此以显示为准——显示分辨力 `= span/(Points-1)`（1001 点即 `span/1000`，例如 span 10 MHz → 0.01 MHz），marker 显示值只能落在显示栅格上（栅格原点为扫频起点 `中心频率 − span/2`）。程序把指令读数按该分辨力量化到栅格后作为显示值参与结论，同时保留指令原始读数与偏差，两者都在导出中。
+
+**显示样式（小数点由分辨力决定）**：导出与日志中的 `*_text` 字段按频谱仪显示样式给出——单位按频率量级自动切换（Hz/kHz/MHz/GHz，可用 `--unit` 强制），小数位数由显示分辨力决定，因此同一行的显示值、分辨力与偏差小数位对齐：
+
+| 频率点 | Span | 显示分辨力 | marker 显示 | 偏差 |
+|---|---|---|---|---|
+| 100 MHz | 10 MHz | 0.01 MHz | `100.00 MHz` | `+0.00 MHz` |
+| 100 MHz | 1 MHz | 0.001 MHz | `100.000 MHz` | `+0.000 MHz` |
+| 100 MHz | 100 MHz | 0.1 MHz | `100.0 MHz` | `+0.0 MHz` |
+| 1 MHz | 10 kHz | 10 Hz | `1.00000 MHz` | `+0.00000 MHz` |
+| 1000 MHz | 100 MHz | 0.0001 GHz | `1.0000 GHz` | `+0.0000 GHz` |
 
 | 导出字段 | 含义 |
 |---|---|
-| `reading_hz` | 指令读取的 marker 频率（原始值） |
-| `displayed_hz` | 量化到显示栅格后的显示值 |
-| `error_hz` | `displayed_hz − 标称频率`（**结论以此为准**） |
+| `reading_hz` | 指令读取的 marker 频率（原始值，Hz） |
+| `displayed_hz` / `displayed_text` | 量化到显示栅格后的显示值（数值 / 显示样式文本） |
+| `error_hz` / `error_text` | `displayed_hz − 标称频率`（**结论以此为准**；`error_text` 带正负号） |
 | `raw_error_hz` | `reading_hz − 标称频率` |
 | `relative_ppm` | `error_hz / 标称频率 × 10⁶` |
-| `resolution_hz` | `span/(Points-1)` |
+| `resolution_hz` / `resolution_text` | `span/(Points-1)`（数值 / 显示样式文本） |
+| `freq_text` / `span_text` | 标称频率与扫频宽度的显示样式文本（与该行小数位一致） |
 
-结论字段：`max_abs_error_hz`（最大显示偏差）及其频率/扫频宽度、`max_abs_relative_ppm`、`max_error_in_resolution_units`（最大偏差占分辨力的倍数）。
+结论字段：`max_abs_error_hz` 与 `max_abs_error_text`（最大显示偏差）、对应的频率/扫频宽度（数值与文本）、`max_abs_relative_ppm`、`max_error_in_resolution_units`（最大偏差占分辨力的倍数）。
 
 ```bash
 # 默认频率点与参数
@@ -680,6 +691,9 @@ sa-cli freq-reading
 
 # 指定频率点 / 采样点数
 sa-cli freq-reading -f 1M 10M 100M 1000M --points-count 1001
+
+# 强制用 MHz 显示（默认按量级自动切换，1000 MHz 会显示为 1.0000 GHz）
+sa-cli freq-reading -f 100M 1000M 26500M --unit MHz
 
 # 中文别名 / 导出
 sa-cli 频率读数 -f 100M 1000M --output freq_reading.json
@@ -694,6 +708,7 @@ sa-cli 频率读数 -f 100M 1000M --output freq_reading.json
 | `--sg-power` | | float | −1 | 信号源输出电平 (dBm) |
 | `--points-count` | | int ≥ 2 | 1001 | 采样点数 Points（显示分辨力 = span/(Points-1)） |
 | `--settle` | | float | 0.5 | 每个扫频点扫描完成后的稳定等待下限 (s) |
+| `--unit` | | str | auto | 显示单位：`auto` 按量级自动，或强制 `Hz`/`kHz`/`MHz`/`GHz` |
 | `--sg-addr` | | str | GPIB0::19 | 信号源 VISA 地址 |
 | `--sa-addr` | | str | GPIB0::18 | 频谱仪 VISA 地址 |
 
@@ -706,19 +721,24 @@ sa-cli 频率读数 -f 100M 1000M --output freq_reading.json
   校准频率点:   [1000000.0, 10000000.0, 100000000.0, ...]
   参考电平:     0 dBm，信号源电平 -1 dBm
   采样点数:     1001（显示分辨力 = span/(Points-1)）
+  显示单位:     自动（按量级切换）
   扫频宽度规则: 1 MHz→10k/100k/1M；10 MHz→100k/1M/10M；≥100 MHz→1M/10M/100M
 
 [1/18] 频率 1 MHz，扫频宽度 10 kHz
-  marker 读数 1000000.0 Hz → 显示 1000000.0 Hz（分辨力 10.0 Hz，偏差 +0.0 Hz）
+  marker 读数 1000000.0 Hz → 显示 1.00000 MHz（分辨力 0.00001 MHz，偏差 +0.00000 MHz）
 ...
 
 ===== 测量结果 =====
-  1 MHz / Span 0.01 MHz → marker 显示 1000000.0 Hz（分辨力 10.0 Hz，偏差 +0.0 Hz）
-  1 MHz / Span 0.1 MHz → marker 显示 1000000.0 Hz（分辨力 100.0 Hz，偏差 +0.0 Hz）
+  1.00000 MHz / Span 0.01000 MHz → marker 显示 1.00000 MHz（分辨力 0.00001 MHz，偏差 +0.00000 MHz）
+  10.0000 MHz / Span 1.0000 MHz → marker 显示 10.0000 MHz（分辨力 0.0010 MHz，偏差 +0.0000 MHz）
+  100.00 MHz / Span 10.00 MHz → marker 显示 100.00 MHz（分辨力 0.01 MHz，偏差 +0.00 MHz）
+  1.0000 GHz / Span 100.0 MHz → marker 显示 1.0000 GHz（分辨力 0.0001 GHz，偏差 +0.0000 GHz）
   ...
-  最大显示偏差: +10.0 Hz @ 100 MHz（Span 100 MHz），占分辨力 0.10 倍
+  最大显示偏差: +0.01 MHz @ 100.00 MHz（Span 10.00 MHz），占分辨力 1.00 倍
   最大相对偏差: +0.100 ppm
 ```
+
+> 单位与小数位随分辨力变化：同一个 100 MHz 点，Span 1 MHz 显示 `100.000 MHz`、Span 10 MHz 显示 `100.00 MHz`、Span 100 MHz 显示 `100.0 MHz`；1000 MHz 点默认显示 `1.0000 GHz`，需要与记录表统一时用 `--unit MHz`。
 
 ## 架构说明
 

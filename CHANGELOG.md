@@ -10,6 +10,7 @@
   - 每个频率点设三个扫频宽度：1 MHz 点 0.01/0.1/1 MHz；10 MHz 点 0.1/1/10 MHz；≥100 MHz 点 1/10/100 MHz
   - 频谱仪参考电平 0 dBm、信号源 −1 dBm；采样点数 `Points` 默认 1001，显示分辨力 `span/(Points-1)`
   - 读数以**仪器显示为准**：指令读数按显示分辨力量化到显示栅格后作为显示值参与结论，同时导出原始读数（`reading_hz` 与 `raw_error_hz`）
+  - 显示文本按仪器样式给出：单位按量级自动切换（可用 `--unit` 强制 Hz/kHz/MHz/GHz），小数位数由显示分辨力决定，同一行的显示值/分辨力/偏差小数位对齐（例：100 MHz 点、Span 10 MHz → 分辨力 0.01 MHz → 显示 `100.00 MHz`）
   - 导出结论：`max_abs_error_hz`（含对应频率/扫频宽度）、`max_abs_relative_ppm`、`max_error_in_resolution_units`
 - 频谱仪指令集新增 `set_sweep_points`（`:SWEep:POINts`），并新增 `DEFAULT_SWEEP_POINTS` 等默认值
 

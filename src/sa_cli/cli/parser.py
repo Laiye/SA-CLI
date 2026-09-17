@@ -232,6 +232,10 @@ def build_parser():
         "--settle", type=_nonneg_float, default=0.5,
         help="每个扫频点扫描完成后的稳定等待下限 (s)，默认 0.5",
     )
+    fr.add_argument(
+        "--unit", choices=["auto", "Hz", "kHz", "MHz", "GHz"], default="auto",
+        help="显示单位：auto 按频率量级自动切换（默认），也可强制 Hz/kHz/MHz/GHz",
+    )
     _add_instrument_args(fr)
     _add_output_arg(fr)
 

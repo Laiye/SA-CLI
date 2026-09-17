@@ -495,6 +495,34 @@ def test_main_freq_reading_end_to_end(monkeypatch, tmp_path):
     assert "max_abs_error_hz" in data and "max_abs_relative_ppm" in data
 
 
+def test_main_freq_reading_display_text_matches_resolution(monkeypatch, tmp_path):
+    """100 MHz 点 / Span 10 MHz → 分辨力 0.01 MHz，显示文本为 MHz 两位小数。"""
+    from sa_cli.cli import main, parser, commands
+    _patch_rm(monkeypatch)
+    out = tmp_path / "fr100.json"
+    assert main.main(["freq-reading", "-f", "100e6", "--output", str(out)]) == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    row = next(r for r in data["results"] if r["span_hz"] == 10e6)
+    assert row["resolution_text"] == "0.01 MHz"
+    assert row["displayed_text"].endswith(" MHz")
+    assert len(row["displayed_text"].split()[0].split(".")[1]) == 2      # 两位小数
+    assert row["freq_text"] == "100.00 MHz"
+    assert data["unit"] == "auto"
+
+
+def test_main_freq_reading_unit_can_be_forced(monkeypatch, tmp_path):
+    """--unit MHz 时高频点也用 MHz 显示（默认自动会切到 GHz）。"""
+    from sa_cli.cli import main, parser, commands
+    _patch_rm(monkeypatch)
+    out = tmp_path / "fr_unit.json"
+    assert main.main(["freq-reading", "-f", "1000e6", "--unit", "MHz",
+                      "--output", str(out)]) == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["unit"] == "MHz"
+    assert all(r["displayed_text"].endswith(" MHz") for r in data["results"])
+    assert all(r["freq_text"].startswith("1000.0") for r in data["results"])
+
+
 def test_main_freq_reading_aliases(monkeypatch):
     from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
