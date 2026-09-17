@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sa-cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "基于 JSON 指令集的频谱分析仪 & 信号发生器 CLI 控制与测量工具"
 readme = "README.md"
 requires-python = ">=3.8"

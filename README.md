@@ -108,6 +108,7 @@ SA-CLI/
   main.py                    # 旧入口兼容转发
   pyproject.toml             # src 包发现、入口点、依赖与包数据
   MANIFEST.in                # 源码发行包清单
+  CHANGELOG.md               # 版本变更记录与行为变化清单
 ```
 
 安装后可用 `sa-cli`、`python -m sa_cli`；仓库内仍支持 `python main.py` 和
@@ -180,6 +181,8 @@ python main.py phase-noise -o 100 --output result.json
 ```json
 { "command": "rbw", "partial": true, "results": [ {"rbw_hz": 100, "measured_hz": 100.3, ...} ] }
 ```
+
+**CSV 列**：每一行 = 该点数据列 + 导出元数据列。元数据包含 `command`、`partial`（完整结果时为 `False`），以及该命令的 `export_meta` 与结论字段（如 `carrier_hz`、`ref_rbw_hz`、`max_abs_delta_db`）。若下游按固定列解析，请注意新增列。
 
 ## 测试
 
@@ -740,3 +743,12 @@ python -m pip wheel . --no-deps -w dist
 
 发布前在独立环境安装 wheel，并切换到仓库外运行
 `sa-cli rbw-switch -b 100 1000 --dry-run`，验证入口和内置 JSON 资源完整。
+
+## 版本与变更
+
+| 版本 | 布局 | 说明 |
+|---|---|---|
+| **0.2.0**（当前） | `src/sa_cli/` 包布局 | 结构重构，并强化失败判定、导出与配置校验 |
+| 0.1.0 | 仓库根顶层模块 | 首个版本（提交 `7cc21e9`） |
+
+完整变更与**行为变化清单**见 [CHANGELOG.md](CHANGELOG.md)。升级时请特别留意：OPC 等待超时会中止当前校准点、边沿/峰值不收敛即报错、CSV 增加元数据列、`cal_points.json` 拒绝重复点、`SA_CLI_DATA_DIR` 指向缺失目录不再回退到包内数据。
