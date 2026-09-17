@@ -38,9 +38,6 @@ class FakeVisaResource:
             return "1"
         return "OK"
 
-    def read_bytes(self, nbytes):
-        raise OSError("no pending data")
-
     def close(self):
         pass
 

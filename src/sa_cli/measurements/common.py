@@ -63,14 +63,6 @@ def _settle_time(span):
     return FAST_SPAN_SETTLE
 
 
-def _opc_done(instr):
-    """*OPC? 返回 1 视为操作完成；I/O 异常或非数值返回视为未完成。"""
-    try:
-        return float(instr.opc()) == 1.0
-    except Exception:
-        return False
-
-
 def _wait_opc(instr, min_sleep=0.0, timeout_s=OPC_TIMEOUT_S):
     """等待完成；超时或通信失败中止，单次 I/O 受剩余预算限制。"""
     if min_sleep > 0:

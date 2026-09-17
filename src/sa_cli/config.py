@@ -65,9 +65,22 @@ def _load_cal_points():
     return data
 
 
+_PACKAGED_CAL_POINTS = None
+
+
 def cal_points():
-    """读取各校准项目默认校准点（cal_points.json）。"""
-    return _load_cal_points()
+    """读取各校准项目默认校准点（cal_points.json）。
+
+    未设置 SA_CLI_DATA_DIR 时缓存随包分发的内容，避免构造解析器时为每个命令
+    重复解析（一次 --help 会查询多个命令的默认点）；设置了覆盖目录时每次实时
+    读取，保证运行期修改配置文件立即生效。
+    """
+    global _PACKAGED_CAL_POINTS
+    if os.environ.get(DATA_DIR_ENV):
+        return _load_cal_points()
+    if _PACKAGED_CAL_POINTS is None:
+        _PACKAGED_CAL_POINTS = _load_cal_points()
+    return _PACKAGED_CAL_POINTS
 
 
 def cal_point_defaults(command, fallback):

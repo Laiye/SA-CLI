@@ -72,7 +72,9 @@ def _add_output_arg(parser):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="SA-CLI: 频谱分析仪控制与测量工具")
+    parser = argparse.ArgumentParser(
+        prog="sa-cli", description="SA-CLI: 频谱分析仪控制与测量工具",
+    )
     parser.add_argument("--verbose", action="store_true", help="输出调试日志")
     parser.add_argument(
         "--dry-run", action="store_true",

@@ -68,9 +68,6 @@ class _FakeResource:
             return "1"
         return "OK"
 
-    def read_bytes(self, n):
-        raise OSError()
-
     def close(self):
         pass
 

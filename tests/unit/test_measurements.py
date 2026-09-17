@@ -74,10 +74,12 @@ def test_wait_sweep_toggles_single_and_continuous():
     assert ":INITiate:CONTinuous ON" in writes
 
 
-def test_opc_done_false_on_non_numeric():
+def test_opc_non_numeric_response_aborts():
+    """非数值 OPC 响应视为通信异常，中止当前校准点（不再继续轮询）。"""
     sg, sa = make_pair(50e6, 100)
     sa.instr.responses["*OPC?"] = "OK"   # responses 优先于 *OPC? 特判
-    assert common._opc_done(sa) is False
+    with pytest.raises(RuntimeError, match="OPC"):
+        common._wait_opc(sa, timeout_s=1)
 
 
 # ---------- _find_edge ----------
