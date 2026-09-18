@@ -254,6 +254,10 @@ def build_parser():
         help="参考电平不高于该值时启用平均 (dBm)，默认 -55",
     )
     rl.add_argument(
+        "--step-delay", type=_nonneg_float, default=config.DEFAULT_REF_LEVEL_STEP_DELAY,
+        help="两台仪器调整之间的间隔 (s)，默认 1；0 表示不额外等待",
+    )
+    rl.add_argument(
         "--settle", type=_nonneg_float, default=0.5,
         help="每次调整后的稳定等待下限 (s)，默认 0.5",
     )

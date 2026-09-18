@@ -374,6 +374,7 @@ def _cmd_freq_reading(sig, spec, args):
                        "max_sg_power_dbm": args.max_sg_power,
                        "average_count": args.average_count,
                        "average_below_dbm": args.average_below,
+                       "step_delay_s": args.step_delay,
                    },
                    summarize=_summarize_ref_level)
 def _cmd_ref_level(sig, spec, args):
@@ -385,6 +386,8 @@ def _cmd_ref_level(sig, spec, args):
     logger.info("  安全上限:     信号源输出不超过 %s dBm", args.max_sg_power)
     logger.info("  弱信号平均:   %s", "关闭" if args.average_count <= 1 else
                 f"≤ {args.average_below} dBm 时平均 {args.average_count} 次")
+    logger.info("  调整间隔:     两台仪器之间 %.1f s（顺序：升高先频谱仪、降低先信号源）",
+                args.step_delay)
     logger.info("")
     try:
         results = cal_ref_level(
@@ -399,6 +402,7 @@ def _cmd_ref_level(sig, spec, args):
             max_sg_power_dbm=args.max_sg_power,
             average_count=args.average_count,
             average_below_dbm=args.average_below,
+            step_delay_s=args.step_delay,
             settle_s=args.settle,
         )
     except MeasurementError as e:

@@ -24,6 +24,7 @@ def cal_ref_level(spec_an, sig_gen, levels=None,
                   max_sg_power_dbm=config.DEFAULT_REF_LEVEL_MAX_SG_POWER,
                   average_count=1,
                   average_below_dbm=config.DEFAULT_REF_LEVEL_AVERAGE_BELOW,
+                  step_delay_s=config.DEFAULT_REF_LEVEL_STEP_DELAY,
                   settle_s=0.5):
     """
     参考电平校准（-10 dBm 为参考点）。
@@ -36,8 +37,9 @@ def cal_ref_level(spec_an, sig_gen, levels=None,
        否则微调信号源直至满足，并记录实际设置值 S0；以当前峰值打开 Delta
        标记（Δ 读数应为 0）；
     2. 逐点：Δ = Lref - (-10)，S = S0 + Δ；**Lref 高于当前参考电平时先设频谱仪
-       参考电平再设信号源，低于时先设信号源再设频谱仪**；稳定后 peak_search
-       把 Delta 活动标记移到新峰值，读取 Δmeas；
+       参考电平再设信号源，低于时先设信号源再设频谱仪**；两次调整之间间隔
+       step_delay_s（默认 1 s），避免两台仪器同时切换造成读数未稳定；
+       稳定后 peak_search 把 Delta 活动标记移到新峰值，读取 Δmeas；
     3. 弱信号点（Lref ≤ average_below_dbm）在 average_count > 1 时启用 trace 平均
        （逐次触发扫描填满平均窗口）；
     4. 安全：任一需要的信号源输出超过 max_sg_power_dbm 即中止（保护频谱仪输入）。
@@ -107,6 +109,11 @@ def cal_ref_level(spec_an, sig_gen, levels=None,
         else:
             spec_an.set_trace_average_off()
 
+    def _pause():
+        """两台仪器调整之间的间隔，避免同时切换导致读数未稳定。"""
+        if step_delay_s > 0:
+            spec_an.sleep(step_delay_s)
+
     results = {}
     progress = common.PointProgress(len(levels))
     current_ref_level = reference_level_dbm
@@ -122,12 +129,15 @@ def cal_ref_level(spec_an, sig_gen, levels=None,
                     f"参考电平 {level:g} dBm 需要信号源输出 {power:.2f} dBm，"
                     f"超过安全上限 {max_sg_power_dbm:.2f} dBm")
 
-            # 调整顺序：升高参考电平先设频谱仪，降低则先设信号源
+            # 调整顺序：升高参考电平先设频谱仪，降低则先设信号源；
+            # 两次调整之间留出间隔（默认 1 s）
             if level > current_ref_level:
                 _set_ref_level(level)
+                _pause()
                 _set_sg_power(power)
             elif level < current_ref_level:
                 _set_sg_power(power)
+                _pause()
                 _set_ref_level(level)
             current_ref_level = level
 

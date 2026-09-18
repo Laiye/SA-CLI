@@ -644,7 +644,19 @@ def test_main_ref_level_end_to_end(monkeypatch, tmp_path):
     assert data["results"][1]["expected_delta_db"] == pytest.approx(10.0)
     assert data["results"][1]["measured_delta_db"] == pytest.approx(10.0)
     assert data["results"][1]["error_db"] == pytest.approx(0.0)
+    assert data["step_delay_s"] == 1.0
     assert "max_abs_error_db" in data
+
+
+def test_main_ref_level_step_delay_can_be_overridden(monkeypatch, tmp_path):
+    """--step-delay 可调整（0 = 不额外等待）。"""
+    from sa_cli.cli import main, parser, commands
+    _patch_rm_resource(monkeypatch, _RefLevelResource())
+    out = tmp_path / "rl0.json"
+    rc = main.main(["ref-level", "-l", "-10", "0", "--step-delay", "0",
+                    "--output", str(out)])
+    assert rc == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["step_delay_s"] == 0.0
 
 
 def test_main_ref_level_chinese_alias(monkeypatch):
@@ -667,6 +679,7 @@ def test_parser_ref_level_defaults():
     assert args.max_sg_power == 10
     assert args.average_count == 1
     assert args.average_below == -55
+    assert args.step_delay == 1.0
 
 
 def test_parser_ref_level_rejects_bad_average_count():

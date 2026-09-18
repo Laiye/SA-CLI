@@ -50,6 +50,7 @@ DEFAULT_REF_LEVEL_SG_POWER = -11.0        # 信号源初始输出电平 (dBm)
 DEFAULT_REF_LEVEL_TOLERANCE = 0.5         # 参考建立容差 (dB)
 DEFAULT_REF_LEVEL_MAX_SG_POWER = 10.0     # 信号源输出安全上限 (dBm)
 DEFAULT_REF_LEVEL_AVERAGE_BELOW = -55.0   # 低于该参考电平时启用平均 (dBm)
+DEFAULT_REF_LEVEL_STEP_DELAY = 1.0        # 两台仪器调整之间的间隔 (s)
 
 # 各校准项目的默认校准点（代码兜底，cal_points.json 优先）
 DEFAULT_PHASE_NOISE_OFFSETS = [100, 1000, 10e3, 100e3]

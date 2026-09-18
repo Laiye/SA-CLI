@@ -926,3 +926,42 @@ def test_ref_level_rejects_bad_average_count():
     sg, sa, sa_res, sg_res = make_ref_level_pair(absolute_readings=[-11.0])
     with pytest.raises(ValueError, match="平均次数"):
         cal_ref_level(sa, sg, levels=[-10], average_count=0)
+
+
+def test_ref_level_inserts_step_delay_between_adjustments(monkeypatch):
+    """两台仪器调整之间插入 step_delay_s（默认 1 s），顺序保持升高先频谱仪、降低先信号源。"""
+    sg, sa, sa_res, sg_res = make_ref_level_pair(absolute_readings=[-11.0])
+    monkeypatch.setattr(Instrument, "sleep",
+                        lambda self, seconds: sa_res.orders.append(("sleep", seconds)))
+    cal_ref_level(sa, sg, levels=[-10, 0, -20], step_delay_s=1.0)
+
+    actions = [item for item in sa_res.orders[sa_res.orders.index(("delta", None)) + 1:]
+               if item[0] in ("ref_level", "sg_power", "sleep")]
+
+    def _index(kind, value):
+        return next(i for i, item in enumerate(actions)
+                    if item[0] == kind and item[1] == pytest.approx(value))
+
+    up_ref, up_sg = _index("ref_level", 0.0), _index("sg_power", -1.0)
+    down_sg, down_ref = _index("sg_power", -21.0), _index("ref_level", -20.0)
+    assert up_ref < up_sg                      # 升高参考电平：先频谱仪
+    assert down_sg < down_ref                  # 降低参考电平：先信号源
+    assert any(item[0] == "sleep" and item[1] == pytest.approx(1.0)
+               for item in actions[up_ref + 1:up_sg])
+    assert any(item[0] == "sleep" and item[1] == pytest.approx(1.0)
+               for item in actions[down_sg + 1:down_ref])
+
+
+def test_ref_level_step_delay_zero_disables_extra_wait(monkeypatch):
+    sg, sa, sa_res, sg_res = make_ref_level_pair(absolute_readings=[-11.0])
+    monkeypatch.setattr(Instrument, "sleep",
+                        lambda self, seconds: sa_res.orders.append(("sleep", seconds)))
+    cal_ref_level(sa, sg, levels=[-10, 0], step_delay_s=0.0)
+    actions = [item for item in sa_res.orders[sa_res.orders.index(("delta", None)) + 1:]
+               if item[0] in ("ref_level", "sg_power", "sleep")]
+    up_ref = next(i for i, item in enumerate(actions)
+                  if item[0] == "ref_level" and item[1] == pytest.approx(0.0))
+    up_sg = next(i for i, item in enumerate(actions)
+                 if item[0] == "sg_power" and item[1] == pytest.approx(-1.0))
+    assert not any(item[0] == "sleep" and item[1] == 0.0
+                   for item in actions[up_ref + 1:up_sg])
