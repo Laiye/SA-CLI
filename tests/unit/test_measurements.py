@@ -13,7 +13,8 @@ from sa_cli.instruments import Instrument
 from sa_cli.measurements.bandwidth import _find_edge
 from sa_cli.measurements import (MeasurementError, cal_bw60, cal_freq_reading,
                           cal_linear_scale, cal_log_scale, cal_rbw,
-                          cal_rbw_switch, cal_ssb_phase_noise, cal_sweep_width)
+                          cal_rbw_switch, cal_ref_level, cal_ssb_phase_noise,
+                          cal_sweep_width)
 
 
 class ShapeSA(FakeVisaResource):
@@ -775,3 +776,153 @@ def test_freq_reading_display_unit_auto_and_forced():
     assert freq_reading.format_freq(1000e6, 1000e6, resolution) == "1.0000 GHz"
     assert freq_reading.format_freq(1000e6, 1000e6, resolution, unit="MHz") == "1000.0 MHz"
     assert freq_reading.format_freq(1e6, 1e6, 10.0) == "1.00000 MHz"   # 分辨力 10 Hz
+
+
+# ---------- 参考电平 ----------
+
+class RefLevelSG(FakeVisaResource):
+    """记录信号源电平写入，并同步给频谱仪假资源。"""
+
+    def __init__(self, sa):
+        super().__init__()
+        self.sa = sa
+
+    def write(self, command):
+        if command.startswith(":POWer:AMPLitude "):
+            self.sa.sg_power = float(command.split()[-1])
+            self.sa.orders.append(("sg_power", self.sa.sg_power))
+        super().write(command)
+
+
+class RefLevelSA(FakeVisaResource):
+    """模拟频谱仪：普通模式读数取自 absolute_readings，Delta 模式返回相对变化。
+
+    delta_error: {参考电平: 偏差 dB}，用于模拟不同参考电平下的读数误差。
+    """
+
+    def __init__(self, absolute_readings=None, delta_error=None):
+        super().__init__()
+        self.sg_power = None
+        self.ref_level = None
+        self.delta_mode = False
+        self.delta_reference = None
+        self.orders = []
+        self.absolute_readings = list(absolute_readings or [])
+        self.delta_error = dict(delta_error or {})
+        self.fail_ref_level = None
+
+    def _peak(self):
+        level = self.sg_power if self.sg_power is not None else 0.0
+        return level + self.delta_error.get(self.ref_level, 0.0)
+
+    def write(self, command):
+        if command.startswith(":DISPlay:WINDow:TRACe:Y:RLEVel "):
+            self.ref_level = float(command.split()[-1])
+            self.orders.append(("ref_level", self.ref_level))
+        elif command == ":CALCulate:MARKer1:MODE DELTa":
+            self.delta_mode = True
+            self.delta_reference = self._peak()
+            self.orders.append(("delta", None))
+        elif command == ":CALCulate:MARKer1:MODE POS":
+            self.delta_mode = False
+        super().write(command)
+
+    def query(self, command):
+        if command == ":CALCulate:MARKer1:Y?":
+            if self.fail_ref_level is not None and self.ref_level == self.fail_ref_level:
+                raise OSError("simulated marker read failure")
+            if self.delta_mode:
+                return str(self._peak() - self.delta_reference)
+            if self.absolute_readings:
+                return str(self.absolute_readings.pop(0))
+            return str(self._peak())
+        return super().query(command)
+
+
+def make_ref_level_pair(absolute_readings=None, delta_error=None):
+    sa_res = RefLevelSA(absolute_readings=absolute_readings, delta_error=delta_error)
+    sg_res = RefLevelSG(sa_res)
+    sa = Instrument("sa", "spectrum_analyzer.json", rm=FakeResourceManager(sa_res))
+    sg = Instrument("sg", "signal_generator.json", rm=FakeResourceManager(sg_res))
+    return sg, sa, sa_res, sg_res
+
+
+def test_ref_level_establishes_s0_and_uses_it_for_all_points():
+    """读数偏 -0.6 dB 时微调信号源，记录实际 S0，后续点按 S0 计算。"""
+    sg, sa, sa_res, sg_res = make_ref_level_pair(absolute_readings=[-11.6, -11.0])
+    results = cal_ref_level(sa, sg, levels=[-10, 0, -20])
+    assert results[-10]["s0_dbm"] == pytest.approx(-10.4)
+    assert results[0]["sg_power_dbm"] == pytest.approx(-0.4)        # Δ = +10 → S0 + 10
+    assert results[-20]["sg_power_dbm"] == pytest.approx(-20.4)     # Δ = -10 → S0 - 10
+    assert ":POWer:AMPLitude -10.4" in sg_res.writes
+
+
+def test_ref_level_within_tolerance_keeps_initial_power():
+    sg, sa, sa_res, sg_res = make_ref_level_pair(absolute_readings=[-11.3])
+    results = cal_ref_level(sa, sg, levels=[-10])
+    assert results[-10]["s0_dbm"] == pytest.approx(-11.0)
+    assert results[-10]["expected_delta_db"] == pytest.approx(0.0)
+    assert results[-10]["measured_delta_db"] == pytest.approx(0.0)
+
+
+def test_ref_level_adjust_order_follows_direction():
+    """升高参考电平先设频谱仪，降低则先设信号源。"""
+    sg, sa, sa_res, sg_res = make_ref_level_pair(absolute_readings=[-11.0])
+    cal_ref_level(sa, sg, levels=[-10, 0, -20])
+    orders = sa_res.orders
+    actions = [item for item in orders[orders.index(("delta", None)) + 1:]
+               if item[0] in ("ref_level", "sg_power")]
+    assert actions[0][0] == "ref_level" and actions[0][1] == pytest.approx(0.0)
+    assert actions[1][0] == "sg_power" and actions[1][1] == pytest.approx(-1.0)
+    assert actions[2][0] == "sg_power" and actions[2][1] == pytest.approx(-21.0)
+    assert actions[3][0] == "ref_level" and actions[3][1] == pytest.approx(-20.0)
+
+
+def test_ref_level_error_from_delta_reading():
+    """参考电平相关的读数偏差体现为误差列（Δmeas - Δ）。"""
+    sg, sa, sa_res, sg_res = make_ref_level_pair(absolute_readings=[-11.0],
+                                                delta_error={0.0: 0.2})
+    results = cal_ref_level(sa, sg, levels=[-10, 0])
+    assert results[0]["expected_delta_db"] == pytest.approx(10.0)
+    assert results[0]["measured_delta_db"] == pytest.approx(10.2)
+    assert results[0]["error_db"] == pytest.approx(0.2)
+
+
+def test_ref_level_rejects_unsafe_sg_power():
+    sg, sa, sa_res, sg_res = make_ref_level_pair(absolute_readings=[-11.0])
+    with pytest.raises(MeasurementError, match="安全上限"):
+        cal_ref_level(sa, sg, levels=[-10, 10], max_sg_power_dbm=0.0)
+    assert ":OUTPut:STATe OFF" in sg_res.writes          # 中止时关断 RF
+
+
+def test_ref_level_carries_partial_results_on_failure():
+    sg, sa, sa_res, sg_res = make_ref_level_pair(absolute_readings=[-11.0])
+    sa_res.fail_ref_level = 0.0
+    with pytest.raises(MeasurementError) as ei:
+        cal_ref_level(sa, sg, levels=[-10, 0])
+    assert set(ei.value.partial_results.keys()) == {-10}
+    assert ":OUTPut:STATe OFF" in sg_res.writes
+
+
+def test_ref_level_averages_weak_points():
+    """average_count > 1 时仅弱信号点启用 trace 平均，结束后关闭。"""
+    sg, sa, sa_res, sg_res = make_ref_level_pair(absolute_readings=[-11.0])
+    cal_ref_level(sa, sg, levels=[-10, -60], average_count=4, average_below_dbm=-55)
+    assert sa_res.writes.count(":AVERage:STATE ON") == 1
+    assert ":AVERage:COUNt 4" in sa_res.writes
+    assert ":AVERage:STATE OFF" in sa_res.writes
+
+
+def test_ref_level_default_points_run_within_safety_limit():
+    """默认点集（含 +10 dBm）在默认安全上限内可完整跑完。"""
+    sg, sa, sa_res, sg_res = make_ref_level_pair(absolute_readings=[-11.0])
+    results = cal_ref_level(sa, sg)
+    assert list(results.keys()) == config.DEFAULT_REF_LEVEL_POINTS
+    assert len(results) == 9
+    assert results[10]["sg_power_dbm"] == pytest.approx(9.0)        # S0 + 20
+
+
+def test_ref_level_rejects_bad_average_count():
+    sg, sa, sa_res, sg_res = make_ref_level_pair(absolute_readings=[-11.0])
+    with pytest.raises(ValueError, match="平均次数"):
+        cal_ref_level(sa, sg, levels=[-10], average_count=0)

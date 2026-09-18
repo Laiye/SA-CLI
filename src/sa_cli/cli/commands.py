@@ -1,7 +1,7 @@
 """命令分发、测量调用与结果转换。"""
 import logging
 
-from sa_cli.validation import validate_points
+from sa_cli.validation import validate_levels, validate_points
 
 from sa_cli import config
 from sa_cli.measurements.common import PointProgress
@@ -9,8 +9,8 @@ from sa_cli.measurements.freq_reading import format_freq
 from sa_cli.instruments import visa_session
 from sa_cli.measurements import (MeasurementError, cal_bw60, cal_freq_reading,
                                  cal_linear_scale, cal_log_scale, cal_rbw,
-                                 cal_rbw_switch, cal_ssb_phase_noise,
-                                 cal_sweep_width)
+                                 cal_rbw_switch, cal_ref_level,
+                                 cal_ssb_phase_noise, cal_sweep_width)
 from sa_cli.report import export_results, validate_output_path
 from .table import render_table
 
@@ -141,6 +141,31 @@ def _summarize_freq_reading(rows):
     }
 
 
+def _rows_ref_level(results):
+    """原始结果 {Lref: {...}} → 导出行（参考电平 / 信号源设置 / Δ / Δmeas / 误差）。"""
+    return [
+        {"ref_level_dbm": level,
+         "sg_power_dbm": vals["sg_power_dbm"],
+         "expected_delta_db": vals["expected_delta_db"],
+         "measured_delta_db": vals["measured_delta_db"],
+         "error_db": round(vals["error_db"], 3),
+         "s0_dbm": vals["s0_dbm"]}
+        for level, vals in results.items()
+    ]
+
+
+def _summarize_ref_level(rows):
+    """结论字段：实际参考电平 S0、最大读数偏差及其参考电平。"""
+    if not rows:
+        return {}
+    worst = max(rows, key=lambda r: abs(r["error_db"]))
+    return {
+        "s0_dbm": rows[0]["s0_dbm"],
+        "max_abs_error_db": worst["error_db"],
+        "max_abs_error_at_ref_level_dbm": worst["ref_level_dbm"],
+    }
+
+
 def _dispatch(args, *, sleep=None):
     """会话管理 + 统一导出/部分结果导出的执行骨架。"""
     canonical = _ALIAS_TO_CANONICAL.get(args.command, args.command)
@@ -155,6 +180,9 @@ def _dispatch(args, *, sleep=None):
         points = getattr(args, name, None)
         if isinstance(points, list):
             validate_points(points, name)
+    ref_levels = getattr(args, "levels", None)
+    if isinstance(ref_levels, list):
+        validate_levels(ref_levels, "参考电平")
     if getattr(args, "average_count", 0) < 0:
         raise ValueError("平均次数不能为负数")
     cmd = _COMMAND_SPECS[canonical]
@@ -330,6 +358,66 @@ def _cmd_freq_reading(sig, spec, args):
                     summary["max_abs_error_at_span_text"],
                     summary["max_error_in_resolution_units"])
         logger.info("  最大相对偏差: %+.3f ppm", summary["max_abs_relative_ppm"])
+    return rows
+
+
+@_register_command("ref-level", aliases=("reflevel", "参考电平"),
+                   export_meta=lambda args: {
+                       "command": "ref-level",
+                       "carrier_hz": args.carrier,
+                       "span_hz": args.span,
+                       "rbw_hz": args.rbw,
+                       "vbw_hz": args.vbw,
+                       "reference_level_dbm": config.DEFAULT_REF_LEVEL_REFERENCE,
+                       "sg_power_dbm": args.sg_power,
+                       "tolerance_db": args.tolerance,
+                       "max_sg_power_dbm": args.max_sg_power,
+                       "average_count": args.average_count,
+                       "average_below_dbm": args.average_below,
+                   },
+                   summarize=_summarize_ref_level)
+def _cmd_ref_level(sig, spec, args):
+    logger.info("\n===== 参考电平校准（参考点 -10 dBm）=====")
+    logger.info("  校准信号频率: %.0f Hz，扫频宽度 %.0f Hz", args.carrier, args.span)
+    logger.info("  RBW / VBW:    %.0f Hz / %.0f Hz，垂直刻度 1 dB/div", args.rbw, args.vbw)
+    logger.info("  参考电平点:   %s dBm", args.levels)
+    logger.info("  信号源初始:   %s dBm（±%s dB 内微调并记录实际 S0）", args.sg_power, args.tolerance)
+    logger.info("  安全上限:     信号源输出不超过 %s dBm", args.max_sg_power)
+    logger.info("  弱信号平均:   %s", "关闭" if args.average_count <= 1 else
+                f"≤ {args.average_below} dBm 时平均 {args.average_count} 次")
+    logger.info("")
+    try:
+        results = cal_ref_level(
+            spec, sig,
+            levels=args.levels,
+            carrier_freq_hz=args.carrier,
+            span_hz=args.span,
+            rbw_hz=args.rbw,
+            vbw_hz=args.vbw,
+            sg_power_dbm=args.sg_power,
+            tolerance_db=args.tolerance,
+            max_sg_power_dbm=args.max_sg_power,
+            average_count=args.average_count,
+            average_below_dbm=args.average_below,
+            settle_s=args.settle,
+        )
+    except MeasurementError as e:
+        raise MeasurementError(
+            str(e), partial_results=_rows_ref_level(e.partial_results or {})) from e
+
+    logger.info("\n===== 测量结果 =====")
+    rows = _rows_ref_level(results)
+    logger.info("\n%s", render_table(
+        ["参考电平 (dBm)", "信号源 S (dBm)", "Δ (dB)", "Δmeas (dB)", "误差 (dB)"],
+        [[f"{row['ref_level_dbm']:g}", f"{row['sg_power_dbm']:.2f}",
+          f"{row['expected_delta_db']:+.2f}", f"{row['measured_delta_db']:+.3f}",
+          f"{row['error_db']:+.3f}"] for row in rows],
+        aligns=["right", "right", "right", "right", "right"]))
+    summary = _summarize_ref_level(rows)
+    if summary:
+        logger.info("  参考建立实际信号源电平 S0: %.3f dBm", summary["s0_dbm"])
+        logger.info("  最大读数偏差: %+.3f dB @ %g dBm", summary["max_abs_error_db"],
+                    summary["max_abs_error_at_ref_level_dbm"])
     return rows
 
 

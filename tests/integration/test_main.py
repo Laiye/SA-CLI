@@ -94,6 +94,32 @@ def _patch_rm(monkeypatch):
     monkeypatch.setattr(session.pyvisa, "ResourceManager", lambda: _FakeRM())
 
 
+class _RefLevelResource(_FakeResource):
+    """参考电平用假资源：普通模式读 -11.3（参考建立可收敛），Delta 模式读 10.0。"""
+
+    def __init__(self):
+        super().__init__()
+        self.delta = False
+
+    def write(self, command):
+        if command == ":CALCulate:MARKer1:MODE DELTa":
+            self.delta = True
+        super().write(command)
+
+    def query(self, command):
+        if "MARKer1:Y?" in command:
+            return "10.000" if self.delta else "-11.3"
+        return super().query(command)
+
+
+def _patch_rm_resource(monkeypatch, resource):
+    """用指定的假资源构造 ResourceManager（供需要特定读数的命令使用）。"""
+    rm = _FakeRM()
+    rm.resource = resource
+    monkeypatch.setattr(session.pyvisa, "ResourceManager", lambda: rm)
+    return rm
+
+
 def test_main_rbw_end_to_end(monkeypatch, tmp_path):
     from sa_cli.cli import main, parser, commands
     _patch_rm(monkeypatch)
@@ -593,4 +619,89 @@ def test_main_rbw_prints_results_table(monkeypatch, caplog):
     assert "设定 RBW (Hz)" in text
     assert "实测 3dB 带宽 (Hz)" in text
     assert "误差 (%)" in text
+    assert "|-----" in text
+
+
+# ---------- 参考电平 ----------
+
+def test_main_ref_level_end_to_end(monkeypatch, tmp_path):
+    from sa_cli.cli import main, parser, commands
+    _patch_rm_resource(monkeypatch, _RefLevelResource())
+    out = tmp_path / "rl.json"
+    rc = main.main(["ref-level", "-l", "-10", "0", "--output", str(out)])
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["command"] == "ref-level"
+    assert data["reference_level_dbm"] == -10
+    assert data["carrier_hz"] == 50e6
+    assert data["span_hz"] == 10e3
+    assert data["rbw_hz"] == 1e3 and data["vbw_hz"] == 30
+    assert [row["ref_level_dbm"] for row in data["results"]] == [-10, 0]
+    # 参考建立：读数 -11.3 在 ±0.5 内 → 不调整，S0 = -11.0
+    assert data["s0_dbm"] == pytest.approx(-11.0)
+    assert data["results"][0]["s0_dbm"] == pytest.approx(-11.0)
+    assert data["results"][1]["sg_power_dbm"] == pytest.approx(-1.0)      # S0 + 10
+    assert data["results"][1]["expected_delta_db"] == pytest.approx(10.0)
+    assert data["results"][1]["measured_delta_db"] == pytest.approx(10.0)
+    assert data["results"][1]["error_db"] == pytest.approx(0.0)
+    assert "max_abs_error_db" in data
+
+
+def test_main_ref_level_chinese_alias(monkeypatch):
+    from sa_cli.cli import main, parser, commands
+    _patch_rm_resource(monkeypatch, _RefLevelResource())
+    assert main.main(["参考电平", "-l", "-10"]) == 0
+    _patch_rm_resource(monkeypatch, _RefLevelResource())     # 换新假资源（Delta 状态复位）
+    assert main.main(["reflevel", "-l", "-10"]) == 0
+
+
+def test_parser_ref_level_defaults():
+    args = _parse("ref-level")
+    assert args.levels == [-10, 0, 10, -20, -30, -40, -50, -60, -70]
+    assert args.carrier == 50e6
+    assert args.span == 10e3
+    assert args.rbw == 1e3
+    assert args.vbw == 30
+    assert args.sg_power == -11
+    assert args.tolerance == 0.5
+    assert args.max_sg_power == 10
+    assert args.average_count == 1
+    assert args.average_below == -55
+
+
+def test_parser_ref_level_rejects_bad_average_count():
+    with pytest.raises(SystemExit):
+        _parse("ref-level", "--average-count", "0")
+
+
+def test_main_ref_level_dry_run(monkeypatch, caplog):
+    """dry-run 输出参考电平相关 SCPI 序列（含 Delta 标记与仪器设置）。"""
+    import logging
+
+    from sa_cli.cli import main, parser, commands
+    monkeypatch.setattr(
+        session.pyvisa, "ResourceManager",
+        lambda: (_ for _ in ()).throw(AssertionError("dry-run 不应创建 ResourceManager")))
+    with caplog.at_level(logging.INFO):
+        rc = main.main(["ref-level", "-l", "-10", "0", "--dry-run"])
+    assert rc == 0
+    text = caplog.text
+    assert ":DISPlay:WINDow:TRACe:Y:RLEVel -10.0" in text
+    assert ":BANDwidth:RESolution 1000.0" in text
+    assert ":BANDwidth:VIDeo 30" in text
+    assert ":DISPlay:WINDow:TRACe:Y:SCALe:PDIVision 1" in text
+    assert ":CALCulate:MARKer1:MODE DELTa" in text
+
+
+def test_main_ref_level_prints_results_table(monkeypatch, caplog):
+    import logging
+
+    from sa_cli.cli import main, parser, commands
+    _patch_rm_resource(monkeypatch, _RefLevelResource())
+    with caplog.at_level(logging.INFO):
+        assert main.main(["ref-level", "-l", "-10", "0"]) == 0
+    text = caplog.text
+    assert "参考电平 (dBm)" in text
+    assert "信号源 S (dBm)" in text
+    assert "Δmeas (dB)" in text
     assert "|-----" in text

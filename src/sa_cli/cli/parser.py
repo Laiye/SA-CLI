@@ -2,7 +2,7 @@
 import argparse
 
 from sa_cli import config
-from sa_cli.validation import finite_float
+from sa_cli.validation import finite_float, validate_levels
 
 # 数值后缀：k/K=1e3、M=1e6、G=1e9（小写 m 与"毫"歧义，不接受）
 _SI_PREFIXES = {"k": 1e3, "K": 1e3, "M": 1e6, "G": 1e9, "g": 1e9}
@@ -205,6 +205,60 @@ def build_parser():
     )
     _add_instrument_args(rsw)
     _add_output_arg(rsw)
+
+    # ---------- 参考电平 ----------
+    rl = subparsers.add_parser(
+        "ref-level", aliases=["reflevel", "参考电平"], parents=[common],
+        help="参考电平校准（-10 dBm 为参考点）",
+    )
+    rl.add_argument(
+        "--levels", "-l", type=_any_float, nargs="+",
+        default=config.cal_point_defaults("ref-level", config.DEFAULT_REF_LEVEL_POINTS,
+                                          validate_levels),
+        help="参考电平点列表 (dBm)，默认 -10 0 10 -20 -30 -40 -50 -60 -70；默认读取 cal_points.json",
+    )
+    rl.add_argument(
+        "--carrier", "-c", type=_positive_float, default=config.DEFAULT_REF_LEVEL_CARRIER,
+        help="校准信号频率 (Hz)，默认 50e6 (50 MHz)",
+    )
+    rl.add_argument(
+        "--span", type=_positive_float, default=config.DEFAULT_REF_LEVEL_SPAN,
+        help="扫频宽度 (Hz)，默认 10k",
+    )
+    rl.add_argument(
+        "--rbw", type=_positive_float, default=config.DEFAULT_REF_LEVEL_RBW,
+        help="分辨力带宽 (Hz)，默认 1k",
+    )
+    rl.add_argument(
+        "--vbw", type=_positive_float, default=config.DEFAULT_REF_LEVEL_VBW,
+        help="视频带宽 (Hz)，默认 30",
+    )
+    rl.add_argument(
+        "--sg-power", type=_any_float, default=config.DEFAULT_REF_LEVEL_SG_POWER,
+        help="信号源初始输出电平 (dBm)，默认 -11",
+    )
+    rl.add_argument(
+        "--tolerance", type=_nonneg_float, default=config.DEFAULT_REF_LEVEL_TOLERANCE,
+        help="参考建立容差 (dB)，默认 0.5",
+    )
+    rl.add_argument(
+        "--max-sg-power", type=_any_float, default=config.DEFAULT_REF_LEVEL_MAX_SG_POWER,
+        help="信号源输出安全上限 (dBm)，默认 10；超过即中止以保护频谱仪输入",
+    )
+    rl.add_argument(
+        "--average-count", type=_int_at_least(1, "平均次数"), default=1,
+        help="弱信号点的 trace 平均次数，默认 1（不平均）",
+    )
+    rl.add_argument(
+        "--average-below", type=_any_float, default=config.DEFAULT_REF_LEVEL_AVERAGE_BELOW,
+        help="参考电平不高于该值时启用平均 (dBm)，默认 -55",
+    )
+    rl.add_argument(
+        "--settle", type=_nonneg_float, default=0.5,
+        help="每次调整后的稳定等待下限 (s)，默认 0.5",
+    )
+    _add_instrument_args(rl)
+    _add_output_arg(rl)
 
     # ---------- 频率读数 ----------
     fr = subparsers.add_parser(

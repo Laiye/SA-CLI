@@ -38,6 +38,19 @@ FREQ_READING_SPANS_LOW = [10e3, 100e3, 1e6]    # 1 MHz 点：0.01 / 0.1 / 1 MHz
 FREQ_READING_SPANS_MID = [100e3, 1e6, 10e6]    # 10 MHz 点：0.1 / 1 / 10 MHz
 FREQ_READING_SPANS_HIGH = [1e6, 10e6, 100e6]   # ≥100 MHz 点：1 / 10 / 100 MHz
 
+# 参考电平校准（以 -10 dBm 为参考点）默认参数
+DEFAULT_REF_LEVEL_POINTS = [-10, 0, 10, -20, -30, -40, -50, -60, -70]
+DEFAULT_REF_LEVEL_REFERENCE = -10.0       # 参考点 (dBm)
+DEFAULT_REF_LEVEL_CARRIER = 50e6          # 校准信号频率 (Hz)
+DEFAULT_REF_LEVEL_SPAN = 10e3             # 扫频宽度 (Hz)
+DEFAULT_REF_LEVEL_RBW = 1e3               # 分辨力带宽 (Hz)
+DEFAULT_REF_LEVEL_VBW = 30                # 视频带宽 (Hz)
+DEFAULT_REF_LEVEL_VSCALE = 1              # 垂直刻度 (dB/div)
+DEFAULT_REF_LEVEL_SG_POWER = -11.0        # 信号源初始输出电平 (dBm)
+DEFAULT_REF_LEVEL_TOLERANCE = 0.5         # 参考建立容差 (dB)
+DEFAULT_REF_LEVEL_MAX_SG_POWER = 10.0     # 信号源输出安全上限 (dBm)
+DEFAULT_REF_LEVEL_AVERAGE_BELOW = -55.0   # 低于该参考电平时启用平均 (dBm)
+
 # 各校准项目的默认校准点（代码兜底，cal_points.json 优先）
 DEFAULT_PHASE_NOISE_OFFSETS = [100, 1000, 10e3, 100e3]
 DEFAULT_RBW_LIST = [100, 1000, 3000, 10e3, 30e3, 100e3, 300e3, 1e6]
@@ -93,10 +106,14 @@ def cal_points():
     return _PACKAGED_CAL_POINTS
 
 
-def cal_point_defaults(command, fallback):
-    """返回该校准项目的默认校准点：cal_points.json 配置优先，否则用代码兜底。"""
+def cal_point_defaults(command, fallback, validate=validate_points):
+    """返回该校准项目的默认校准点：cal_points.json 配置优先，否则用代码兜底。
+
+    validate 用于校验点列表（默认要求有限正数；参考电平等含 0/负值的项目
+    可传入 validate_levels）。
+    """
     points = cal_points().get(command)
-    return validate_points(fallback if points is None else points, command)
+    return validate(fallback if points is None else points, command)
 
 
 def sg_addr():

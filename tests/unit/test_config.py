@@ -2,7 +2,10 @@
 
 import os
 
+import pytest
+
 from sa_cli import config
+from sa_cli.validation import validate_levels
 
 
 def test_cal_point_defaults_from_config():
@@ -24,6 +27,15 @@ def test_cal_point_defaults_from_config():
     assert config.cal_point_defaults("freq-reading", []) == [
         1000000, 10000000, 100000000, 1000000000, 10000000000, 26500000000,
     ]
+
+
+def test_ref_level_defaults_use_signed_validator():
+    """参考电平点含 0 与负值，须用 validate_levels 校验。"""
+    assert config.cal_point_defaults("ref-level", [], validate_levels) == [
+        -10, 0, 10, -20, -30, -40, -50, -60, -70,
+    ]
+    with pytest.raises(ValueError):
+        config.cal_point_defaults("ref-level", [])       # 默认校验器要求正数
 
 
 def test_cal_point_defaults_fallback_for_unknown_command():
