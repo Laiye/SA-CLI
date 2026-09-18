@@ -12,7 +12,7 @@ from tests.fakes import FakeResourceManager, FakeVisaResource
 from sa_cli.instruments import Instrument
 from sa_cli.measurements.bandwidth import _find_edge
 from sa_cli.measurements import (MeasurementError, cal_bw60, cal_freq_reading,
-                          cal_linear_scale, cal_log_scale, cal_rbw,
+                          cal_input_atten, cal_linear_scale, cal_log_scale, cal_rbw,
                           cal_rbw_switch, cal_ref_level, cal_ssb_phase_noise,
                           cal_sweep_width)
 
@@ -965,3 +965,210 @@ def test_ref_level_step_delay_zero_disables_extra_wait(monkeypatch):
                  if item[0] == "sg_power" and item[1] == pytest.approx(-1.0))
     assert not any(item[0] == "sleep" and item[1] == 0.0
                    for item in actions[up_ref + 1:up_sg])
+
+
+# ---------- 输入衰减器转换影响 ----------
+
+class InputAttenSA(FakeVisaResource):
+    """模拟频谱仪：Delta 模式读数 = 当前信号源电平 + 该输入衰减档偏差，再减去参考。
+
+    atten_error: {输入衰减 (dB): 偏差 dB}，用于模拟各衰减档的转换影响。
+    """
+
+    def __init__(self, absolute_readings=None, atten_error=None):
+        super().__init__()
+        self.sg_power = None
+        self.atten = None
+        self.ref_level = None
+        self.delta_mode = False
+        self.delta_reference = None
+        self.orders = []
+        self.absolute_readings = list(absolute_readings or [])
+        self.atten_error = dict(atten_error or {})
+        self.fail_atten = None
+
+    def _peak(self):
+        level = self.sg_power if self.sg_power is not None else 0.0
+        return level + self.atten_error.get(self.atten, 0.0)
+
+    def write(self, command):
+        if command.startswith(":POWer:ATTenuation "):
+            self.atten = float(command.split()[-1])
+            self.orders.append(("atten", self.atten))
+        elif command.startswith(":DISPlay:WINDow:TRACe:Y:RLEVel "):
+            self.ref_level = float(command.split()[-1])
+            self.orders.append(("ref_level", self.ref_level))
+        elif command == ":CALCulate:MARKer1:MODE DELTa":
+            self.delta_mode = True
+            self.delta_reference = self._peak()
+            self.orders.append(("delta", None))
+        elif command == ":CALCulate:MARKer1:MODE POS":
+            self.delta_mode = False
+        super().write(command)
+
+    def query(self, command):
+        if command == ":CALCulate:MARKer1:Y?":
+            if self.fail_atten is not None and self.atten == self.fail_atten:
+                raise OSError("simulated marker read failure")
+            if self.delta_mode:
+                return str(self._peak() - self.delta_reference)
+            if self.absolute_readings:
+                return str(self.absolute_readings.pop(0))
+            return str(self._peak())
+        return super().query(command)
+
+
+class InputAttenSG(RefLevelSG):
+    """记录信号源电平写入，并同步给频谱仪假资源。"""
+
+
+def make_input_atten_pair(absolute_readings=None, atten_error=None):
+    sa_res = InputAttenSA(absolute_readings=absolute_readings, atten_error=atten_error)
+    sg_res = InputAttenSG(sa_res)
+    sa = Instrument("sa", "spectrum_analyzer.json", rm=FakeResourceManager(sa_res))
+    sg = Instrument("sg", "signal_generator.json", rm=FakeResourceManager(sg_res))
+    return sg, sa, sa_res, sg_res
+
+
+def test_input_atten_records_s0_and_uses_it_for_all_points():
+    """读数偏 -0.6 dB 时微调信号源，记录实际 S0，后续点按实际 S0 计算。"""
+    sg, sa, sa_res, sg_res = make_input_atten_pair(absolute_readings=[-62.6, -62.0])
+    results = cal_input_atten(sa, sg, attens=[10, 20])
+    assert results[10]["s0_dbm"] == pytest.approx(-61.4)          # 不固定用 -62
+    assert results[20]["sg_power_dbm"] == pytest.approx(-51.4)    # S0 + 10
+    assert results[20]["ref_level_dbm"] == pytest.approx(-50.0)
+    assert ":POWer:AMPLitude -61.4" in sg_res.writes
+
+
+def test_input_atten_default_points_map_to_levels_and_power():
+    """默认点表：Lref = -60 + (A - 10)，S = S0 + (A - 10)，理论 Δ = A - 10。"""
+    sg, sa, sa_res, sg_res = make_input_atten_pair(absolute_readings=[-62.0])
+    results = cal_input_atten(sa, sg)
+    assert list(results.keys()) == config.DEFAULT_ATTEN_POINTS
+    assert [results[a]["ref_level_dbm"] for a in config.DEFAULT_ATTEN_POINTS] == [
+        -60, -50, -40, -30, -20, -10, 0]
+    assert results[20]["sg_power_dbm"] == pytest.approx(-52.0)
+    assert results[70]["sg_power_dbm"] == pytest.approx(-2.0)
+    assert results[70]["expected_delta_db"] == pytest.approx(60.0)
+
+
+def test_input_atten_in_tolerance_keeps_initial_power():
+    sg, sa, sa_res, sg_res = make_input_atten_pair(absolute_readings=[-62.3])
+    results = cal_input_atten(sa, sg, attens=[10])
+    assert results[10]["s0_dbm"] == pytest.approx(-62.0)
+    assert results[10]["expected_delta_db"] == pytest.approx(0.0)
+    assert results[10]["measured_delta_db"] == pytest.approx(0.0)
+    assert results[10]["error_db"] == pytest.approx(0.0)
+
+
+def test_input_atten_adjust_order_follows_direction():
+    """衰减升高：先加衰减再抬参考电平，最后加信号源；降低则先降信号源。"""
+    sg, sa, sa_res, sg_res = make_input_atten_pair(absolute_readings=[-62.0])
+    cal_input_atten(sa, sg, attens=[20, 10])
+    actions = [item for item in sa_res.orders[sa_res.orders.index(("delta", None)) + 1:]
+               if item[0] in ("atten", "ref_level", "sg_power")]
+
+    def _index(kind, value):
+        return next(i for i, item in enumerate(actions)
+                    if item[0] == kind and item[1] == pytest.approx(value))
+
+    up_atten, up_ref, up_sg = _index("atten", 20.0), _index("ref_level", -50.0), _index("sg_power", -52.0)
+    down_sg, down_ref, down_atten = (_index("sg_power", -62.0), _index("ref_level", -60.0),
+                                    _index("atten", 10.0))
+    assert up_atten < up_ref < up_sg
+    assert down_sg < down_ref < down_atten
+
+
+def test_input_atten_step_delay_between_instrument_adjustments(monkeypatch):
+    """频谱仪侧调整与信号源调整之间插入 step_delay_s（默认 1 s）。"""
+    sg, sa, sa_res, sg_res = make_input_atten_pair(absolute_readings=[-62.0])
+    monkeypatch.setattr(Instrument, "sleep",
+                        lambda self, seconds: sa_res.orders.append(("sleep", seconds)))
+    cal_input_atten(sa, sg, attens=[20, 10], step_delay_s=1.0)
+    actions = [item for item in sa_res.orders[sa_res.orders.index(("delta", None)) + 1:]
+               if item[0] in ("atten", "ref_level", "sg_power", "sleep")]
+
+    def _index(kind, value):
+        return next(i for i, item in enumerate(actions)
+                    if item[0] == kind and item[1] == pytest.approx(value))
+
+    up_ref, up_sg = _index("ref_level", -50.0), _index("sg_power", -52.0)
+    down_sg, down_ref = _index("sg_power", -62.0), _index("ref_level", -60.0)
+    assert any(item[0] == "sleep" and item[1] == pytest.approx(1.0)
+               for item in actions[up_ref + 1:up_sg])
+    assert any(item[0] == "sleep" and item[1] == pytest.approx(1.0)
+               for item in actions[down_sg + 1:down_ref])
+
+
+def test_input_atten_step_delay_zero_disables_extra_wait(monkeypatch):
+    sg, sa, sa_res, sg_res = make_input_atten_pair(absolute_readings=[-62.0])
+    monkeypatch.setattr(Instrument, "sleep",
+                        lambda self, seconds: sa_res.orders.append(("sleep", seconds)))
+    cal_input_atten(sa, sg, attens=[10, 20], step_delay_s=0.0)
+    actions = [item for item in sa_res.orders[sa_res.orders.index(("delta", None)) + 1:]
+               if item[0] in ("ref_level", "sg_power", "sleep")]
+    up_ref = next(i for i, item in enumerate(actions)
+                  if item[0] == "ref_level" and item[1] == pytest.approx(-50.0))
+    up_sg = next(i for i, item in enumerate(actions)
+                 if item[0] == "sg_power" and item[1] == pytest.approx(-52.0))
+    assert not any(item[0] == "sleep" and item[1] == 0.0
+                   for item in actions[up_ref + 1:up_sg])
+
+
+def test_input_atten_error_from_attenuation_difference():
+    """衰减档偏差体现为误差列（ΔLm - 理论 Δ）。"""
+    sg, sa, sa_res, sg_res = make_input_atten_pair(absolute_readings=[-62.0],
+                                                  atten_error={40: 0.35})
+    results = cal_input_atten(sa, sg, attens=[10, 40])
+    assert results[40]["expected_delta_db"] == pytest.approx(30.0)
+    assert results[40]["measured_delta_db"] == pytest.approx(30.35)
+    assert results[40]["error_db"] == pytest.approx(0.35)
+
+
+def test_input_atten_reads_delta_directly_without_peak_search():
+    """逐点不做 peak search（峰值标记只在参考建立阶段使用一次）。"""
+    sg, sa, sa_res, sg_res = make_input_atten_pair(absolute_readings=[-62.0])
+    cal_input_atten(sa, sg, attens=[10, 20, 30])
+    assert sa_res.writes.count(":CALCulate:MARKer1:MAXimum") == 1
+    assert sa_res.writes.index(":CALCulate:MARKer1:MODE DELTa") > \
+        sa_res.writes.index(":CALCulate:MARKer1:MAXimum")
+
+
+def test_input_atten_manual_attenuation_and_averaging_setup():
+    """关闭自动衰减后按档设置输入衰减；按平均次数开启迹线平均并填满窗口。"""
+    sg, sa, sa_res, sg_res = make_input_atten_pair(absolute_readings=[-62.0])
+    cal_input_atten(sa, sg, attens=[10, 20], average_count=3)
+    auto_off = sa_res.writes.index(":POWer:ATTenuation:AUTO OFF")
+    assert auto_off < sa_res.writes.index(":POWer:ATTenuation 10.0")
+    assert ":AVERage:COUNt 3" in sa_res.writes
+    assert sa_res.writes.count(":AVERage:STATE ON") == 1
+    assert ":AVERage:STATE OFF" in sa_res.writes
+    assert ":DISPlay:WINDow:TRACe:Y:SCALe:PDIVision 1" in sa_res.writes
+
+
+def test_input_atten_rejects_unsafe_sg_power():
+    sg, sa, sa_res, sg_res = make_input_atten_pair(absolute_readings=[-62.0])
+    with pytest.raises(MeasurementError, match="安全上限"):
+        cal_input_atten(sa, sg, attens=[10, 70], max_sg_power_dbm=-5.0)
+    assert ":OUTPut:STATe OFF" in sg_res.writes          # 中止时关断 RF
+
+
+def test_input_atten_carries_partial_results_on_failure():
+    sg, sa, sa_res, sg_res = make_input_atten_pair(absolute_readings=[-62.0])
+    sa_res.fail_atten = 20.0
+    with pytest.raises(MeasurementError) as ei:
+        cal_input_atten(sa, sg, attens=[10, 20, 30])
+    assert set(ei.value.partial_results.keys()) == {10}
+    assert ":OUTPut:STATe OFF" in sg_res.writes
+
+
+def test_input_atten_rejects_bad_average_count():
+    sg, sa, sa_res, sg_res = make_input_atten_pair(absolute_readings=[-62.0])
+    with pytest.raises(ValueError, match="平均次数"):
+        cal_input_atten(sa, sg, attens=[10], average_count=0)
+
+
+def test_input_atten_rejects_negative_attenuation():
+    sg, sa, sa_res, sg_res = make_input_atten_pair(absolute_readings=[-62.0])
+    with pytest.raises(ValueError, match="输入衰减"):
+        cal_input_atten(sa, sg, attens=[-1, 10])

@@ -718,3 +718,141 @@ def test_main_ref_level_prints_results_table(monkeypatch, caplog):
     assert "信号源 S (dBm)" in text
     assert "Δmeas (dB)" in text
     assert "|-----" in text
+
+
+# ---------- 输入衰减器转换影响 ----------
+
+class _InputAttenResource(_FakeResource):
+    """输入衰减用假资源：峰值读数 = 当前信号源电平 + 该衰减档偏差，
+    Delta 模式返回相对参考点的变化（aten_offset 模拟各档转换影响）。"""
+
+    def __init__(self, atten_offset=None):
+        super().__init__()
+        self.sg_power = -62.0
+        self.atten = 10.0
+        self.delta = False
+        self.delta_reference = None
+        self.atten_offset = dict(atten_offset or {})
+
+    def _peak(self):
+        return self.sg_power + self.atten_offset.get(self.atten, 0.0)
+
+    def write(self, command):
+        if command == ":CALCulate:MARKer1:MODE DELTa":
+            self.delta = True
+            self.delta_reference = self._peak()
+        elif command.startswith(":POWer:ATTenuation "):
+            self.atten = float(command.split()[-1])
+        elif command.startswith(":POWer:AMPLitude "):
+            self.sg_power = float(command.split()[-1])
+        super().write(command)
+
+    def query(self, command):
+        if "MARKer1:Y?" in command:
+            return str(self._peak() - self.delta_reference) if self.delta else str(self._peak())
+        return super().query(command)
+
+
+def test_main_input_atten_end_to_end(monkeypatch, tmp_path):
+    from sa_cli.cli import main, parser, commands
+    _patch_rm_resource(monkeypatch, _InputAttenResource())
+    out = tmp_path / "ia.json"
+    rc = main.main(["input-atten", "-a", "10", "20", "30", "--output", str(out)])
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["command"] == "input-atten"
+    assert data["carrier_hz"] == 50e6
+    assert data["span_hz"] == 500
+    assert data["rbw_hz"] == 1e3
+    assert data["reference_level_dbm"] == -60
+    assert data["ref_atten_db"] == 10
+    assert data["average_count"] == 10
+    assert data["step_delay_s"] == 1.0
+    assert [row["atten_db"] for row in data["results"]] == [10, 20, 30]
+    assert [row["ref_level_dbm"] for row in data["results"]] == [-60, -50, -40]
+    assert data["s0_dbm"] == pytest.approx(-62.0)
+    assert [row["sg_power_dbm"] for row in data["results"]] == pytest.approx([-62.0, -52.0, -42.0])
+    assert [row["expected_delta_db"] for row in data["results"]] == pytest.approx([0.0, 10.0, 20.0])
+    assert [row["error_db"] for row in data["results"]] == pytest.approx([0.0, 0.0, 0.0])
+    assert "max_abs_error_db" in data
+
+
+def test_main_input_atten_error_column_from_reading(monkeypatch, tmp_path):
+    """衰减档读数偏差体现在误差列（ΔLm - 理论 Δ）。"""
+    from sa_cli.cli import main, parser, commands
+    _patch_rm_resource(monkeypatch, _InputAttenResource(atten_offset={20: 0.4}))
+    out = tmp_path / "ia_err.json"
+    rc = main.main(["input-atten", "-a", "10", "20", "--output", str(out)])
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["results"][1]["measured_delta_db"] == pytest.approx(10.4)
+    assert data["results"][1]["error_db"] == pytest.approx(0.4)
+    assert data["max_abs_error_db"] == pytest.approx(0.4)
+    assert data["max_abs_error_at_atten_db"] == 20
+
+
+def test_main_input_atten_chinese_and_short_alias(monkeypatch):
+    from sa_cli.cli import main, parser, commands
+    _patch_rm_resource(monkeypatch, _InputAttenResource())
+    assert main.main(["输入衰减", "-a", "10"]) == 0
+    _patch_rm_resource(monkeypatch, _InputAttenResource())    # 换新假资源（Delta 状态复位）
+    assert main.main(["atten", "-a", "10"]) == 0
+
+
+def test_parser_input_atten_defaults():
+    args = _parse("input-atten")
+    assert args.attens == [10, 20, 30, 40, 50, 60, 70]
+    assert args.carrier == 50e6
+    assert args.span == 500
+    assert args.rbw == 1e3
+    assert args.ref_level == -60
+    assert args.ref_atten == 10
+    assert args.sg_power == -62
+    assert args.tolerance == 0.5
+    assert args.max_sg_power == 10
+    assert args.average_count == 10
+    assert args.step_delay == 1.0
+
+
+def test_parser_input_atten_rejects_invalid_values():
+    with pytest.raises(SystemExit):
+        _parse("input-atten", "-a", "-10")                # 负衰减
+    with pytest.raises(SystemExit):
+        _parse("input-atten", "--average-count", "0")
+
+
+def test_main_input_atten_dry_run(monkeypatch, caplog):
+    """dry-run 输出输入衰减相关 SCPI 序列（手动衰减、平均、Delta 标记）。"""
+    import logging
+
+    from sa_cli.cli import main, parser, commands
+    monkeypatch.setattr(
+        session.pyvisa, "ResourceManager",
+        lambda: (_ for _ in ()).throw(AssertionError("dry-run 不应创建 ResourceManager")))
+    with caplog.at_level(logging.INFO):
+        rc = main.main(["input-atten", "-a", "10", "20", "--dry-run"])
+    assert rc == 0
+    text = caplog.text
+    assert ":POWer:ATTenuation:AUTO OFF" in text
+    assert ":POWer:ATTenuation 10.0" in text
+    assert ":AVERage:COUNt 10" in text
+    assert ":AVERage:STATE ON" in text
+    assert ":DISPlay:WINDow:TRACe:Y:RLEVel -60.0" in text
+    assert ":DISPlay:WINDow:TRACe:Y:SCALe:PDIVision 1" in text
+    assert ":BANDwidth:RESolution 1000.0" in text
+    assert ":CALCulate:MARKer1:MODE DELTa" in text
+
+
+def test_main_input_atten_prints_results_table(monkeypatch, caplog):
+    import logging
+
+    from sa_cli.cli import main, parser, commands
+    _patch_rm_resource(monkeypatch, _InputAttenResource())
+    with caplog.at_level(logging.INFO):
+        assert main.main(["input-atten", "-a", "10", "20"]) == 0
+    text = caplog.text
+    assert "输入衰减 (dB)" in text
+    assert "参考电平 (dBm)" in text
+    assert "ΔLm (dB)" in text
+    assert "误差 (dB)" in text
+    assert "|-----" in text

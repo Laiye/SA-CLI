@@ -1,15 +1,15 @@
 """命令分发、测量调用与结果转换。"""
 import logging
 
-from sa_cli.validation import validate_levels, validate_points
+from sa_cli.validation import validate_attenuations, validate_levels, validate_points
 
 from sa_cli import config
 from sa_cli.measurements.common import PointProgress
 from sa_cli.measurements.freq_reading import format_freq
 from sa_cli.instruments import visa_session
 from sa_cli.measurements import (MeasurementError, cal_bw60, cal_freq_reading,
-                                 cal_linear_scale, cal_log_scale, cal_rbw,
-                                 cal_rbw_switch, cal_ref_level,
+                                 cal_input_atten, cal_linear_scale, cal_log_scale,
+                                 cal_rbw, cal_rbw_switch, cal_ref_level,
                                  cal_ssb_phase_noise, cal_sweep_width)
 from sa_cli.report import export_results, validate_output_path
 from .table import render_table
@@ -166,6 +166,32 @@ def _summarize_ref_level(rows):
     }
 
 
+def _rows_input_atten(results):
+    """原始结果 {A: {...}} → 导出行（输入衰减 / 参考电平 / 信号源设置 / Δ / ΔLm / 误差）。"""
+    return [
+        {"atten_db": atten,
+         "ref_level_dbm": vals["ref_level_dbm"],
+         "sg_power_dbm": vals["sg_power_dbm"],
+         "expected_delta_db": vals["expected_delta_db"],
+         "measured_delta_db": vals["measured_delta_db"],
+         "error_db": round(vals["error_db"], 3),
+         "s0_dbm": vals["s0_dbm"]}
+        for atten, vals in results.items()
+    ]
+
+
+def _summarize_input_atten(rows):
+    """结论字段：实际参考点信号源 S0、最大读数偏差及其输入衰减档。"""
+    if not rows:
+        return {}
+    worst = max(rows, key=lambda r: abs(r["error_db"]))
+    return {
+        "s0_dbm": rows[0]["s0_dbm"],
+        "max_abs_error_db": worst["error_db"],
+        "max_abs_error_at_atten_db": worst["atten_db"],
+    }
+
+
 def _dispatch(args, *, sleep=None):
     """会话管理 + 统一导出/部分结果导出的执行骨架。"""
     canonical = _ALIAS_TO_CANONICAL.get(args.command, args.command)
@@ -180,6 +206,9 @@ def _dispatch(args, *, sleep=None):
         points = getattr(args, name, None)
         if isinstance(points, list):
             validate_points(points, name)
+    attens = getattr(args, "attens", None)
+    if isinstance(attens, list):
+        validate_attenuations(attens, "输入衰减")
     ref_levels = getattr(args, "levels", None)
     if isinstance(ref_levels, list):
         validate_levels(ref_levels, "参考电平")
@@ -422,6 +451,71 @@ def _cmd_ref_level(sig, spec, args):
         logger.info("  参考建立实际信号源电平 S0: %.3f dBm", summary["s0_dbm"])
         logger.info("  最大读数偏差: %+.3f dB @ %g dBm", summary["max_abs_error_db"],
                     summary["max_abs_error_at_ref_level_dbm"])
+    return rows
+
+
+@_register_command("input-atten", aliases=("atten", "输入衰减", "输入衰减器转换影响"),
+                   export_meta=lambda args: {
+                       "command": "input-atten",
+                       "carrier_hz": args.carrier,
+                       "span_hz": args.span,
+                       "rbw_hz": args.rbw,
+                       "reference_level_dbm": args.ref_level,
+                       "ref_atten_db": args.ref_atten,
+                       "sg_power_dbm": args.sg_power,
+                       "tolerance_db": args.tolerance,
+                       "max_sg_power_dbm": args.max_sg_power,
+                       "average_count": args.average_count,
+                       "step_delay_s": args.step_delay,
+                   },
+                   summarize=_summarize_input_atten)
+def _cmd_input_atten(sig, spec, args):
+    logger.info("\n===== 输入衰减器转换影响校准（参考点 %g dB）=====", args.ref_atten)
+    logger.info("  校准信号频率: %.0f Hz，扫频宽度 %.0f Hz", args.carrier, args.span)
+    logger.info("  RBW / 垂直刻度: %.0f Hz / %s dB/div", args.rbw, config.DEFAULT_ATTEN_VSCALE)
+    logger.info("  参考点状态:   输入衰减 %g dB + 参考电平 %g dBm", args.ref_atten, args.ref_level)
+    logger.info("  衰减校准点:   %s dB", args.attens)
+    logger.info("  信号源初始:   %s dBm（±%s dB 内微调并记录实际 S0）", args.sg_power, args.tolerance)
+    logger.info("  安全上限:     信号源输出不超过 %s dBm", args.max_sg_power)
+    logger.info("  迹线平均:     %s",
+                "关闭" if args.average_count <= 1 else f"{args.average_count} 次")
+    logger.info("  调整间隔:     %.1f s（顺序：衰减升高先加衰减与参考电平，降低先降信号源）",
+                args.step_delay)
+    logger.info("")
+    try:
+        results = cal_input_atten(
+            spec, sig,
+            attens=args.attens,
+            carrier_freq_hz=args.carrier,
+            span_hz=args.span,
+            rbw_hz=args.rbw,
+            ref_level_dbm=args.ref_level,
+            ref_atten_db=args.ref_atten,
+            sg_power_dbm=args.sg_power,
+            tolerance_db=args.tolerance,
+            max_sg_power_dbm=args.max_sg_power,
+            average_count=args.average_count,
+            step_delay_s=args.step_delay,
+            settle_s=args.settle,
+        )
+    except MeasurementError as e:
+        raise MeasurementError(
+            str(e), partial_results=_rows_input_atten(e.partial_results or {})) from e
+
+    logger.info("\n===== 测量结果 =====")
+    rows = _rows_input_atten(results)
+    logger.info("\n%s", render_table(
+        ["输入衰减 (dB)", "参考电平 (dBm)", "信号源 S (dBm)", "Δ理论 (dB)", "ΔLm (dB)",
+         "误差 (dB)"],
+        [[f"{row['atten_db']:g}", f"{row['ref_level_dbm']:+g}",
+          f"{row['sg_power_dbm']:.2f}", f"{row['expected_delta_db']:+.2f}",
+          f"{row['measured_delta_db']:+.3f}", f"{row['error_db']:+.3f}"] for row in rows],
+        aligns=["right"] * 6))
+    summary = _summarize_input_atten(rows)
+    if summary:
+        logger.info("  参考建立实际信号源电平 S0: %.3f dBm", summary["s0_dbm"])
+        logger.info("  最大读数偏差: %+.3f dB @ %g dB 输入衰减", summary["max_abs_error_db"],
+                    summary["max_abs_error_at_atten_db"])
     return rows
 
 

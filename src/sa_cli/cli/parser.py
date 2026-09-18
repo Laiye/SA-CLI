@@ -2,7 +2,7 @@
 import argparse
 
 from sa_cli import config
-from sa_cli.validation import finite_float, validate_levels
+from sa_cli.validation import finite_float, validate_attenuations, validate_levels
 
 # 数值后缀：k/K=1e3、M=1e6、G=1e9（小写 m 与"毫"歧义，不接受）
 _SI_PREFIXES = {"k": 1e3, "K": 1e3, "M": 1e6, "G": 1e9, "g": 1e9}
@@ -263,6 +263,66 @@ def build_parser():
     )
     _add_instrument_args(rl)
     _add_output_arg(rl)
+
+    # ---------- 输入衰减器转换影响 ----------
+    ia = subparsers.add_parser(
+        "input-atten", aliases=["atten", "输入衰减", "输入衰减器转换影响"],
+        parents=[common],
+        help="输入衰减器转换影响校准（10 dB 输入衰减为参考点）",
+    )
+    ia.add_argument(
+        "--attens", "-a", type=_nonneg_float, nargs="+",
+        default=config.cal_point_defaults("input-atten", config.DEFAULT_ATTEN_POINTS,
+                                          validate_attenuations),
+        help="输入衰减校准点列表 (dB)，默认 10 20 30 40 50 60 70；默认读取 cal_points.json",
+    )
+    ia.add_argument(
+        "--carrier", "-c", type=_positive_float, default=config.DEFAULT_ATTEN_CARRIER,
+        help="校准信号频率 (Hz)，默认 50e6 (50 MHz)",
+    )
+    ia.add_argument(
+        "--span", type=_positive_float, default=config.DEFAULT_ATTEN_SPAN,
+        help="扫频宽度 (Hz)，默认 500",
+    )
+    ia.add_argument(
+        "--rbw", type=_positive_float, default=config.DEFAULT_ATTEN_RBW,
+        help="分辨力带宽 (Hz)，默认 1k",
+    )
+    ia.add_argument(
+        "--ref-level", "-r", type=_any_float, default=config.DEFAULT_ATTEN_REF_LEVEL,
+        help="参考点（参考输入衰减）对应的参考电平 (dBm)，默认 -60",
+    )
+    ia.add_argument(
+        "--ref-atten", type=_nonneg_float, default=config.DEFAULT_ATTEN_REF_POINT,
+        help="参考点输入衰减 (dB)，默认 10；参考电平 = 该点参考电平 + (A - 参考衰减)",
+    )
+    ia.add_argument(
+        "--sg-power", type=_any_float, default=config.DEFAULT_ATTEN_SG_POWER,
+        help="信号源初始输出电平 (dBm)，默认 -62",
+    )
+    ia.add_argument(
+        "--tolerance", type=_nonneg_float, default=config.DEFAULT_ATTEN_TOLERANCE,
+        help="参考建立容差 (dB)，默认 0.5",
+    )
+    ia.add_argument(
+        "--max-sg-power", type=_any_float, default=config.DEFAULT_ATTEN_MAX_SG_POWER,
+        help="信号源输出安全上限 (dBm)，默认 10；超过即中止以保护频谱仪输入",
+    )
+    ia.add_argument(
+        "--average-count", type=_int_at_least(1, "平均次数"),
+        default=config.DEFAULT_ATTEN_AVERAGE_COUNT,
+        help="迹线平均次数，默认 10（1 表示不平均）",
+    )
+    ia.add_argument(
+        "--step-delay", type=_nonneg_float, default=config.DEFAULT_ATTEN_STEP_DELAY,
+        help="衰减/参考电平调整与信号源调整之间的间隔 (s)，默认 1；0 表示不额外等待",
+    )
+    ia.add_argument(
+        "--settle", type=_nonneg_float, default=0.5,
+        help="每次调整后的稳定等待下限 (s)，默认 0.5",
+    )
+    _add_instrument_args(ia)
+    _add_output_arg(ia)
 
     # ---------- 频率读数 ----------
     fr = subparsers.add_parser(

@@ -22,6 +22,15 @@ def validate_points(points, name="校准点"):
     return list(points)
 
 
+def validate_attenuations(points, name="输入衰减"):
+    """输入衰减点（dB）：非空、不重复的有限非负数（0 dB 表示不衰减）。"""
+    values = validate_levels(points, name)
+    for value in values:
+        if value < 0:
+            raise ValueError(f"{name} 不能为负数: {value!r}")
+    return values
+
+
 def validate_levels(levels, name="参考电平"):
     """电平列表（dBm）：非空、有限、不重复；允许 0 与负值。"""
     if not isinstance(levels, (list, tuple)) or not levels:

@@ -126,7 +126,8 @@ def test_failed_export_preserves_old_file(tmp_path, extension, data):
 
 @pytest.mark.parametrize("argv", [["rbw", "--output", "bad.txt"],
                                    ["rbw", "-b", "100", "100"],
-                                   ["ref-level", "-l", "-10", "-10"]])
+                                   ["ref-level", "-l", "-10", "-10"],
+                                   ["input-atten", "-a", "10", "10"]])
 def test_invalid_options_do_not_connect(monkeypatch, argv):
     session = Mock(side_effect=AssertionError("must not connect"))
     monkeypatch.setattr(commands, "visa_session", session)

@@ -36,6 +36,14 @@
       "commands": [":POWer:ATTenuation "],
       "args_num": 1
     },
+    "set_attenuation_auto_off": {
+      "commands": [":POWer:ATTenuation:AUTO OFF"],
+      "args_num": 0
+    },
+    "set_attenuation_auto_on": {
+      "commands": [":POWer:ATTenuation:AUTO ON"],
+      "args_num": 0
+    },
     "set_sweep_single": {
       "commands": [":INITiate:CONTinuous OFF"],
       "args_num": 0

@@ -52,6 +52,20 @@ DEFAULT_REF_LEVEL_MAX_SG_POWER = 10.0     # 信号源输出安全上限 (dBm)
 DEFAULT_REF_LEVEL_AVERAGE_BELOW = -55.0   # 低于该参考电平时启用平均 (dBm)
 DEFAULT_REF_LEVEL_STEP_DELAY = 1.0        # 两台仪器调整之间的间隔 (s)
 
+# 输入衰减器转换影响（以 10 dB 输入衰减为参考点）默认参数
+DEFAULT_ATTEN_POINTS = [10, 20, 30, 40, 50, 60, 70]   # 输入衰减校准点 (dB)
+DEFAULT_ATTEN_REF_POINT = 10.0            # 参考点输入衰减 (dB)
+DEFAULT_ATTEN_CARRIER = 50e6              # 校准信号频率 (Hz)
+DEFAULT_ATTEN_SPAN = 500.0                # 扫频宽度 (Hz)
+DEFAULT_ATTEN_RBW = 1e3                   # 分辨力带宽 (Hz)
+DEFAULT_ATTEN_VSCALE = 1                  # 垂直显示刻度 (dB/div)
+DEFAULT_ATTEN_REF_LEVEL = -60.0           # 参考点参考电平 (dBm)
+DEFAULT_ATTEN_SG_POWER = -62.0            # 信号源初始输出电平 (dBm)
+DEFAULT_ATTEN_TOLERANCE = 0.5             # 参考建立容差 (dB)
+DEFAULT_ATTEN_MAX_SG_POWER = 10.0         # 信号源输出安全上限 (dBm)
+DEFAULT_ATTEN_AVERAGE_COUNT = 10          # 迹线平均次数
+DEFAULT_ATTEN_STEP_DELAY = 1.0            # 衰减/参考电平调整与信号源调整之间的间隔 (s)
+
 # 各校准项目的默认校准点（代码兜底，cal_points.json 优先）
 DEFAULT_PHASE_NOISE_OFFSETS = [100, 1000, 10e3, 100e3]
 DEFAULT_RBW_LIST = [100, 1000, 3000, 10e3, 30e3, 100e3, 300e3, 1e6]
